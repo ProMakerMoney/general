@@ -4,50 +4,47 @@ import jakarta.persistence.*;
 import lombok.*;
 
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
-import java.time.ZoneOffset;
+import java.time.Instant;
 
-@Getter @Setter
+/**
+ * 1-минутная (или любая другая) свеча из Bybit.
+ */
+@Getter
+@Setter
+@Builder                // <-- даёт Candle.builder()
 @NoArgsConstructor
 @AllArgsConstructor
 @Entity
-@Table(name = "candles")
+@Table(name = "candles",
+        indexes = {
+                @Index(name = "idx_candle_symbol_interval_time",
+                        columnList = "symbol, interval, timestamp", unique = true)
+        })
 public class Candle {
 
-    /** millis UTC ― Primary Key */
     @Id
-    private long time;
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
 
-    @Column(precision = 18, scale = 8, nullable = false)
-    private BigDecimal open;
+    /** BTCUSDT, ETHUSDT … */
+    @Column(length = 20, nullable = false)
+    private String symbol;
 
-    @Column(precision = 18, scale = 8, nullable = false)
-    private BigDecimal high;
+    /** ТФ: 1, 3, 5, 15, 60 … (Bybit формат) */
+    @Column(length = 5, nullable = false)
+    private String interval;
 
-    @Column(precision = 18, scale = 8, nullable = false)
-    private BigDecimal low;
+    /** Время открытия свечи (ms since epoch, UTC). */
+    @Column(nullable = false)
+    private Long timestamp;
 
-    @Column(precision = 18, scale = 8, nullable = false)
-    private BigDecimal close;
-
-    @Column(precision = 18, scale = 8, nullable = false)
-    private BigDecimal volume;
-
-    @Column(name = "quote_volume", precision = 18, scale = 8, nullable = false)
-    private BigDecimal quoteVolume;
-
-    /* удобные методы */
-
-    public LocalDateTime asLocalDateTime() {
-        return LocalDateTime.ofEpochSecond(time / 1_000, 0, ZoneOffset.UTC);
-    }
-
-    public BigDecimal hl2() {                     // (H+L)/2
-        return high.add(low).divide(BigDecimal.valueOf(2));
-    }
-
-    public BigDecimal typicalPrice() {            // (H+L+C)/3
-        return high.add(low).add(close)
-                .divide(BigDecimal.valueOf(3));
-    }
+    /* OHLCV в BigDecimal для финансовой точности */
+    @Column(precision = 18, scale = 8, nullable = false) private BigDecimal open;
+    @Column(precision = 18, scale = 8, nullable = false) private BigDecimal high;
+    @Column(precision = 18, scale = 8, nullable = false) private BigDecimal low;
+    @Column(precision = 18, scale = 8, nullable = false) private BigDecimal close;
+    @Column(precision = 24, scale = 8, nullable = false) private BigDecimal volume;
+    @Column(nullable = false) private String timeframe;
+    @Column(nullable = false) private Instant openTime;
+    @Column(nullable = false) private Instant closeTime;
 }
