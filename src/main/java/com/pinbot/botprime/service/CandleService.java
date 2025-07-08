@@ -1,57 +1,45 @@
 package com.pinbot.botprime.service;
 
 import com.pinbot.botprime.client.BybitClient;
+import com.pinbot.botprime.dto.CandleDto;
 import com.pinbot.botprime.mapper.CandleMapper;
-import com.pinbot.botprime.model.Candle;
+import com.pinbot.botprime.persistence.CandleEntity;
+
 import com.pinbot.botprime.repository.CandleRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
-import java.util.*;
+import java.time.Instant;
+import java.util.List;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class CandleService {
 
-    private final BybitClient      client;
     private final CandleRepository repo;
+    private final BybitClient client;
+    private final CandleMapper mapper;
 
-    /**
-     * Загружаем последние 1000 свечей и сохраняем в БД.
-     */
-    @SuppressWarnings("unchecked")          // безопасные касты к Map / List
-    public List<Candle> loadHistory(String symbol, String interval) {
+    @Transactional
+    public void syncHistory(String symbol, String interval, int limit) {
+        Instant last = repo.findMaxOpenTime(symbol, interval);
+        List<CandleDto> dtos = client.getCandles(symbol, interval, limit);
 
-        Map<String, String> params = Map.of(
-                "category", "linear",
-                "symbol",   symbol,
-                "interval", interval,
-                "limit",    "1000"
-        );
+        List<CandleEntity> toSave = dtos.stream()
+                .map(d -> mapper.toEntity(symbol, interval, d))
+                .filter(e -> last == null || e.getId().getOpenTime().isAfter(last))
+                .collect(Collectors.toList());
 
-        // ответ Bybit → Map<String, Object>
-        Map<String, Object> json = client.publicGet("/v5/market/kline", params);
-
-        /* result.list : [[openTime,open,high,low,close,volume,turnover], ...] */
-        Map<String, Object> result = (Map<String, Object>) json.get("result");
-        List<List<String>>  list   = (List<List<String>>) result.get("list");
-
-        if (list == null || list.isEmpty()) {
-            log.warn("Bybit вернул пустой список свечей для {}", symbol);
-            return Collections.emptyList();
+        if (!toSave.isEmpty()) {
+            repo.saveAll(toSave);
+            log.debug("Saved {} new candles for {}/{}", toSave.size(), symbol, interval);
+        } else {
+            log.debug("No new candles for {}/{}", symbol, interval);
         }
-
-        /* разворачиваем, убираем текущую незакрытую свечу */
-        Collections.reverse(list);
-        list.remove(list.size() - 1);
-
-        List<Candle> candles = list.stream()
-                .map(raw -> CandleMapper.map(raw, symbol, interval))
-                .toList();
-
-        log.info("Сохраняем {} исторических свечей {}-{}", candles.size(), symbol, interval);
-        return repo.saveAll(candles);
     }
 }
+

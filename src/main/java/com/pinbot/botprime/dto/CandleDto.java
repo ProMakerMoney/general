@@ -1,31 +1,21 @@
 package com.pinbot.botprime.dto;
 
-import com.fasterxml.jackson.annotation.JsonFormat;
-import com.fasterxml.jackson.annotation.JsonProperty;
-import lombok.Data;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
 
-import java.math.BigDecimal;
-import java.time.Instant;
-
-@Data
+@Getter @Setter
+@NoArgsConstructor
+@AllArgsConstructor
+// ПОЛЕЙ 7 штук: startMs, open, high, low, close, volume, quoteVolume
 public class CandleDto {
-
-    /** время открытия в мс unix */
-    @JsonProperty("start")
     private long startMs;
-
-    /** время закрытия в мс unix */
-    @JsonProperty("end")
-    private long endMs;
-
-    private BigDecimal open;
-    private BigDecimal high;
-    private BigDecimal low;
-    private BigDecimal close;
-
-    /** объём контрактов */
-    private BigDecimal volume;
-
-    public Instant getOpenTime()  { return Instant.ofEpochMilli(startMs); }
-    public Instant getCloseTime() { return Instant.ofEpochMilli(endMs);  }
+    private double open;
+    private double high;
+    private double low;
+    private double close;
+    private double volume;
+    private double quoteVolume;
 }
+

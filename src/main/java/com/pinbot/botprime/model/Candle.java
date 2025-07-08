@@ -1,50 +1,26 @@
 package com.pinbot.botprime.model;
 
-import jakarta.persistence.*;
-import lombok.*;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
-import java.math.BigDecimal;
-import java.time.Instant;
-
-/**
- * 1-минутная (или любая другая) свеча из Bybit.
- */
-@Getter
-@Setter
-@Builder                // <-- даёт Candle.builder()
+@Data
 @NoArgsConstructor
 @AllArgsConstructor
-@Entity
-@Table(name = "candles",
-        indexes = {
-                @Index(name = "idx_candle_symbol_interval_time",
-                        columnList = "symbol, interval, timestamp", unique = true)
-        })
 public class Candle {
+    private long time;            // epoch millis (open time)
+    private double open;
+    private double high;
+    private double low;
+    private double close;
+    private double volume;
+    private double quoteVolume;
 
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    public double getTypicalPrice() {
+        return (high + low + close) / 3.0;
+    }
 
-    /** BTCUSDT, ETHUSDT … */
-    @Column(length = 20, nullable = false)
-    private String symbol;
-
-    /** ТФ: 1, 3, 5, 15, 60 … (Bybit формат) */
-    @Column(length = 5, nullable = false)
-    private String interval;
-
-    /** Время открытия свечи (ms since epoch, UTC). */
-    @Column(nullable = false)
-    private Long timestamp;
-
-    /* OHLCV в BigDecimal для финансовой точности */
-    @Column(precision = 18, scale = 8, nullable = false) private BigDecimal open;
-    @Column(precision = 18, scale = 8, nullable = false) private BigDecimal high;
-    @Column(precision = 18, scale = 8, nullable = false) private BigDecimal low;
-    @Column(precision = 18, scale = 8, nullable = false) private BigDecimal close;
-    @Column(precision = 24, scale = 8, nullable = false) private BigDecimal volume;
-    @Column(nullable = false) private String timeframe;
-    @Column(nullable = false) private Instant openTime;
-    @Column(nullable = false) private Instant closeTime;
+    public double getHL2() {
+        return (high + low) / 2.0;
+    }
 }

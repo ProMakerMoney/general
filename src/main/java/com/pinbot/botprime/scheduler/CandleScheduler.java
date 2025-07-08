@@ -1,10 +1,16 @@
 package com.pinbot.botprime.scheduler;
 
 import com.pinbot.botprime.service.CandleService;
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+
+
+import java.util.Arrays;
+import java.util.List;
 
 @Component
 @RequiredArgsConstructor
@@ -13,24 +19,36 @@ public class CandleScheduler {
 
     private final CandleService candleService;
 
-    /* список монет лучше вынести в конфиг */
-    private static final String[] SYMBOLS = {"BTCUSDT", "ETHUSDT"};
-    private static final String   INTERVAL = "30"; // 30-минутки
+    @Value("${bot.symbols}")
+    private String symbolsConfig;
 
-    /** разовая инициализация сразу после старта */
-    @Scheduled(initialDelay = 5_000, fixedDelay = Long.MAX_VALUE)
+    @Value("${bot.timeframes}")
+    private String intervalsConfig;
+
+    @Value("${bot.load-limit}")
+    private int loadLimit;
+
+    @PostConstruct
     public void initialLoad() {
-        for (String symbol : SYMBOLS) {
-            candleService.loadHistory(symbol, INTERVAL);
-        }
-        log.info("Исторические свечи загружены ✅");
+        List<String> symbols   = Arrays.asList(symbolsConfig.split(","));
+        List<String> intervals = Arrays.asList(intervalsConfig.split(","));
+
+        log.info(">>> Initial load: fetching last {} candles for {}×{}",
+                loadLimit, symbols.size(), intervals.size());
+
+        symbols.forEach(s -> intervals.forEach(tf ->
+                candleService.syncHistory(s, tf, loadLimit)
+        ));
     }
 
-    /** каждые 30 минут подтягиваем последнюю свечу */
-    @Scheduled(cron = "0 */30 * * * *")
-    public void appendLastCandle() {
-        for (String symbol : SYMBOLS) {
-            candleService.loadHistory(symbol, INTERVAL); // пока перезагружаем 1000 — просто
-        }
+    @Scheduled(cron = "${bot.load-cron}", zone = "${bot.timezone}")
+    public void loadLatest() {
+        List<String> symbols   = Arrays.asList(symbolsConfig.split(","));
+        List<String> intervals = Arrays.asList(intervalsConfig.split(","));
+
+        symbols.forEach(s -> intervals.forEach(tf ->
+                candleService.syncHistory(s, tf, 1)
+        ));
     }
 }
+

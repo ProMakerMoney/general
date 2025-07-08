@@ -25,7 +25,6 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
-/** Мини-обёртка над REST v5 API Bybit. */
 @Component
 @RequiredArgsConstructor
 @Slf4j
@@ -40,95 +39,80 @@ public class BybitClient {
     private Mac       mac;
 
     @PostConstruct
-    void init() throws Exception {
+    public void init() throws Exception {
         webClient = WebClient.builder()
                 .baseUrl(props.getBaseUrl())
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
                 .build();
 
         mac = Mac.getInstance(HMAC_ALGO);
-        mac.init(new SecretKeySpec(props.getApiSecret().getBytes(StandardCharsets.UTF_8), HMAC_ALGO));
+        mac.init(new SecretKeySpec(
+                props.getApiSecret().getBytes(StandardCharsets.UTF_8),
+                HMAC_ALGO));
     }
 
-    /* ---------- PUBLIC API ---------- */
-
-    /**
-     * Публичный GET-запрос без подписей.
-     *
-     * @param path   эндпоинт, начиная с «/»
-     * @param params map с query-string параметрами
-     * @return разобранный JSON как Map<String, Object>
-     */
-    public Map<String, Object> publicGet(String path,
-                                         Map<String, String> params) {
-
+    /** Публичный GET без подписи */
+    public Map<String, Object> publicGet(String path, Map<String, String> params) {
         MultiValueMap<String, String> query = new LinkedMultiValueMap<>();
         query.setAll(params);
-
-        // TypeReference позволяет Jackson корректно десериализовать generic-Map
-        return get(path, query, new TypeReference<>() {});
+        return get(path, query, new TypeReference<Map<String, Object>>() {});
     }
 
-
-    /** Маркет-ордер. */
+    /** Размещение Market-ордера */
     public Map<String, Object> placeMarketOrder(String symbol, String side, String qty) {
-
         MultiValueMap<String, String> body = new LinkedMultiValueMap<>();
         body.add("category",  "linear");
         body.add("symbol",    symbol);
-        body.add("side",      side);          // Buy / Sell
+        body.add("side",      side);
         body.add("orderType", "Market");
         body.add("qty",       qty);
-
-        return post("/v5/order/create", body, new TypeReference<>() {});
+        return post("/v5/order/create", body, new TypeReference<Map<String, Object>>() {});
     }
 
-    /** Сырые свечи (raw JSON → Map). */
+    /** Сырые данные свечей */
     public Map<String, Object> getCandlesRaw(String symbol, String interval, int limit) {
-
         MultiValueMap<String, String> q = new LinkedMultiValueMap<>();
         q.add("category", "linear");
         q.add("symbol",   symbol);
-        q.add("interval", interval);                // 1, 3, 5, 15, 60…
-        q.add("limit",    String.valueOf(limit));   // 1-1000
-
-        return get("/v5/market/kline", q, new TypeReference<>() {});
+        q.add("interval", interval);
+        q.add("limit",    String.valueOf(limit));
+        return get("/v5/market/kline", q, new TypeReference<Map<String, Object>>() {});
     }
 
-    /** Конвертируем в DTO со *BigDecimal*. */
+    /** Преобразование в DTO */
     @SuppressWarnings("unchecked")
     public List<CandleDto> getCandles(String symbol, String interval, int limit) {
-
+        // Получаем «сырые» данные
         Map<String, Object> raw = getCandlesRaw(symbol, interval, limit);
-
         List<List<String>> rows =
                 (List<List<String>>) ((Map<?, ?>) raw.get("result")).get("list");
 
-        return rows.stream().map(r -> {
-            CandleDto c = new CandleDto();
-            c.setStartMs(Long.parseLong(r.get(0)));
-            c.setEndMs  (Long.parseLong(r.get(1)));
-            c.setOpen  (new BigDecimal(r.get(2)));
-            c.setHigh  (new BigDecimal(r.get(3)));
-            c.setLow   (new BigDecimal(r.get(4)));
-            c.setClose (new BigDecimal(r.get(5)));
-            c.setVolume(new BigDecimal(r.get(6)));
-            return c;
-        }).toList();
+        // Маппим каждую строку согласно новому DTO
+        return rows.stream()
+                .map(r -> new CandleDto(
+                        // 0: start time in ms
+                        Long.parseLong(r.get(0)),
+                        // 1–6: open, high, low, close, volume, quoteVolume
+                        new BigDecimal(r.get(1)).doubleValue(),
+                        new BigDecimal(r.get(2)).doubleValue(),
+                        new BigDecimal(r.get(3)).doubleValue(),
+                        new BigDecimal(r.get(4)).doubleValue(),
+                        new BigDecimal(r.get(5)).doubleValue(),
+                        new BigDecimal(r.get(6)).doubleValue()
+                ))
+                .toList();
     }
 
-    /* ---------- LOW-LEVEL ---------- */
+    /* ——— НИЗКОУРОВНЕВЫЕ МЕТОДЫ ——— */
 
     private <T> T get(String path,
                       MultiValueMap<String, String> query,
                       TypeReference<T> type) {
-        long ts   = Instant.now().toEpochMilli();
+        long ts = Instant.now().toEpochMilli();
         String sign = sign(ts + props.getApiKey());
 
         return webClient.get()
-                .uri(uriBuilder -> uriBuilder.path(path)
-                        .queryParams(query)
-                        .build())
+                .uri(u -> u.path(path).queryParams(query).build())
                 .headers(h -> authHeaders(h, ts, sign))
                 .retrieve()
                 .bodyToMono(String.class)
@@ -139,16 +123,13 @@ public class BybitClient {
     private <T> T post(String path,
                        MultiValueMap<String, String> body,
                        TypeReference<T> type) {
-
         long ts = Instant.now().toEpochMilli();
-
         String payload;
         try {
             payload = mapper.writeValueAsString(body.toSingleValueMap());
         } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Unable to build Bybit payload", e);
+            throw new IllegalStateException("Unable to build payload", e);
         }
-
         String sign = sign(ts + props.getApiKey() + payload);
 
         return webClient.post()
@@ -161,12 +142,10 @@ public class BybitClient {
                 .block();
     }
 
-    /* ---------- HELPERS ---------- */
-
-    /** Потокобезопасная HMAC-подпись. */
+    /** HMAC-SHA256 подпись */
     private String sign(String prehash) {
         try {
-            Mac clone = (Mac) mac.clone();              // Mac не thread-safe
+            Mac clone = (Mac) mac.clone();
             byte[] raw = clone.doFinal(prehash.getBytes(StandardCharsets.UTF_8));
             return Hex.encodeHexString(raw);
         } catch (CloneNotSupportedException e) {
@@ -178,15 +157,16 @@ public class BybitClient {
     }
 
     private void authHeaders(HttpHeaders h, long ts, String sign) {
-        h.set("X-BAPI-API-KEY", props.getApiKey());
-        h.set("X-BAPI-TIMESTAMP", String.valueOf(ts));
-        h.set("X-BAPI-SIGN", sign);
+        h.set("X-BAPI-API-KEY",     props.getApiKey());
+        h.set("X-BAPI-TIMESTAMP",   String.valueOf(ts));
+        h.set("X-BAPI-SIGN",        sign);
         h.set("X-BAPI-RECV-WINDOW", String.valueOf(props.getRecvWindow()));
     }
 
-    private <T> T read(String json, TypeReference<T> t) {
-        try { return mapper.readValue(json, t); }
-        catch (Exception e) {
+    private <T> T read(String json, TypeReference<T> type) {
+        try {
+            return mapper.readValue(json, type);
+        } catch (Exception e) {
             throw new IllegalStateException("Bad JSON: " + json, e);
         }
     }

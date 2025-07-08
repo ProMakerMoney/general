@@ -1,28 +1,34 @@
 package com.pinbot.botprime.mapper;
 
-import com.pinbot.botprime.model.Candle;
+import com.pinbot.botprime.dto.CandleDto;
+import com.pinbot.botprime.persistence.CandleEntity;
+import com.pinbot.botprime.persistence.CandlePk;
+import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
-import java.util.List;
+import java.time.Instant;
 
-public final class CandleMapper {
+@Component
+public class CandleMapper {
 
-    private CandleMapper() {}
+    public CandleEntity toEntity(String symbol, String interval, CandleDto dto) {
+        Instant ts = Instant.ofEpochMilli(dto.getStartMs());
 
-    /**
-     * @param raw  элемент массива `list` из ответа Bybit
-     *             формат: [ openTime, open, high, low, close, volume, turnover ]
-     */
-    public static Candle map(List<String> raw, String symbol, String interval) {
-        return Candle.builder()
-                .symbol(symbol)
-                .interval(interval)
-                .timestamp(Long.parseLong(raw.get(0)))
-                .open(new BigDecimal(raw.get(1)))
-                .high(new BigDecimal(raw.get(2)))
-                .low (new BigDecimal(raw.get(3)))
-                .close(new BigDecimal(raw.get(4)))
-                .volume(new BigDecimal(raw.get(5)))
-                .build();
+        CandlePk pk = new CandlePk(symbol, interval, ts);
+
+        CandleEntity e = new CandleEntity();
+        e.setId(pk);
+        // open_time в БД из PK, close_time дублируем start
+        e.setCloseTime(ts);
+
+        e.setOpen(BigDecimal.valueOf(dto.getOpen()));
+        e.setHigh(BigDecimal.valueOf(dto.getHigh()));
+        e.setLow(BigDecimal.valueOf(dto.getLow()));
+        e.setClose(BigDecimal.valueOf(dto.getClose()));
+        e.setVolume(BigDecimal.valueOf(dto.getVolume()));
+        e.setQuoteVolume(BigDecimal.valueOf(dto.getQuoteVolume()));
+
+        return e;
     }
 }
+
