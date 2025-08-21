@@ -87,8 +87,9 @@ public class BybitClient {
         List<List<String>> rows =
                 (List<List<String>>) ((Map<?, ?>) raw.get("result")).get("list");
 
-        // Маппим каждую строку согласно новому DTO
+        // Исключаем самую свежую (ещё не закрытую) свечу: Bybit отдаёт от новой к старой
         return rows.stream()
+                .skip(1)
                 .map(r -> new CandleDto(
                         // 0: start time in ms
                         Long.parseLong(r.get(0)),
