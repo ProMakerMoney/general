@@ -10,15 +10,8 @@ import java.util.List;
 /**
  * Расчёт EMA и TEMA на каждую свечу.
  *
- * Что считаем:
- *  - EMA(shortLen)  по close
- *  - EMA(longLen)   по close
- *  - EMA(110)       по close
- *  - EMA(200)       по close
- *  - TEMA(temaLen)  по HL2 = (high+low)/2, затем сглаживаем SMA(temaSmaLen), как в Pine.
- *
- * Правила:
- *  - Входные свечи должны быть в хронологическом порядке (от старой к новой).
+ * - EMA(11), EMA(30), EMA(110), EMA(200) по close
+ * - TEMA(9) по HL2, сглаженная через SMA(10), как в Pine
  */
 public class IndicatorCalculator {
 
@@ -27,16 +20,13 @@ public class IndicatorCalculator {
     @AllArgsConstructor
     public static class IndicatorPoint {
         private long   openTime;     // ms epoch
-        private double emaShort;     // EMA(shortLen) по close
-        private double emaLong;      // EMA(longLen)  по close
-        private double ema110;       // EMA(110)      по close
-        private double ema200;       // EMA(200)      по close
-        private double temaSmoothed; // SMA(temaSmaLen) от TEMA(temaLen) по HL2
+        private double emaShort;     // EMA(11) по close
+        private double emaLong;      // EMA(30)  по close
+        private double ema110;       // EMA(110) по close
+        private double ema200;       // EMA(200) по close
+        private double temaSmoothed; // SMA(10) от TEMA(9) по HL2
     }
 
-    /**
-     * Основной метод расчёта.
-     */
     public List<IndicatorPoint> calculate(List<CandleDto> candles,
                                           int shortLen,
                                           int longLen,
@@ -51,17 +41,16 @@ public class IndicatorCalculator {
             hl2[i]   = (candles.get(i).getHigh() + candles.get(i).getLow()) / 2.0;
         }
 
-        // EMA по close
-        double[] emaShort = emaSeriesPineStyle(close, shortLen);
-        double[] emaLong  = emaSeriesPineStyle(close, longLen);
-        double[] ema110   = emaSeriesPineStyle(close, 110);
-        double[] ema200   = emaSeriesPineStyle(close, 200);
+        double[] emaShort = emaSeries(close, shortLen);
+        double[] emaLong  = emaSeries(close, longLen);
+        double[] ema110   = emaSeries(close, 110);
+        double[] ema200   = emaSeries(close, 200);
 
-        // TEMA по HL2 + SMA(temaSmaLen), как в Pine
-        double[] tema        = temaSeriesPineStyle(hl2, temaLen);
-        double[] temaSmooth  = smaSeries(tema, temaSmaLen);
+        double[] tema       = temaSeries(hl2, temaLen);
+        double[] temaSmooth = smaSeries(tema, temaSmaLen);
 
-        // Собираем результат
+        int warmup = 3 * (temaLen - 1) + (temaSmaLen - 1);
+
         List<IndicatorPoint> out = new ArrayList<>(n);
         for (int i = 0; i < n; i++) {
             out.add(new IndicatorPoint(
@@ -70,57 +59,64 @@ public class IndicatorCalculator {
                     emaLong[i],
                     ema110[i],
                     ema200[i],
-                    temaSmooth[i]
+                    i < warmup ? Double.NaN : temaSmooth[i]
             ));
         }
         return out;
     }
 
-    // ========================= Pine-compatible EMA =========================
-
-    /** EMA Pine-style: ema[0] = src[0], без SMA в начале. */
-    private double[] emaSeriesPineStyle(double[] src, int len) {
+    private double[] emaSeries(double[] src, int len) {
         int n = src.length;
         double[] out = new double[n];
-        double alpha = 2.0 / (len + 1.0);
+        if (len <= 0 || n == 0) return fillNaN(n);
 
-        if (n == 0) return out;
+        double k = 2.0 / (len + 1);
+        double sma = 0.0;
+        for (int i = 0; i < len; i++) sma += src[i];
+        sma /= len;
 
-        out[0] = src[0];
-        for (int i = 1; i < n; i++) {
-            out[i] = alpha * src[i] + (1 - alpha) * out[i - 1];
-        }
+        for (int i = 0; i < len - 1; i++) out[i] = Double.NaN;
+        out[len - 1] = sma;
+
+        for (int i = len; i < n; i++) out[i] = k * src[i] + (1 - k) * out[i - 1];
         return out;
     }
 
-    /** TEMA = 3*(EMA1 - EMA2) + EMA3, все EMA по Pine-алгоритму. */
-    private double[] temaSeriesPineStyle(double[] src, int len) {
-        double[] e1 = emaSeriesPineStyle(src, len);
-        double[] e2 = emaSeriesPineStyle(e1, len);
-        double[] e3 = emaSeriesPineStyle(e2, len);
-
-        int n = src.length;
-        double[] out = new double[n];
-
-        for (int i = 0; i < n; i++) {
-            out[i] = 3 * (e1[i] - e2[i]) + e3[i];
-        }
-        return out;
-    }
-
-    /** SMA серия. */
     private double[] smaSeries(double[] src, int len) {
         int n = src.length;
         double[] out = new double[n];
-        if (len <= 0 || n == 0) return out;
+        if (len <= 0 || n == 0) return fillNaN(n);
 
         double sum = 0.0;
         for (int i = 0; i < n; i++) {
             sum += src[i];
             if (i >= len) sum -= src[i - len];
-            if (i >= len - 1) out[i] = sum / len;
-            else out[i] = Double.NaN;
+            out[i] = i >= len - 1 ? sum / len : Double.NaN;
         }
         return out;
     }
+
+    private double[] temaSeries(double[] src, int len) {
+        double[] e1 = emaSeries(src, len);
+        double[] e2 = emaSeries(e1, len);
+        double[] e3 = emaSeries(e2, len);
+
+        int n = src.length;
+        double[] out = new double[n];
+        for (int i = 0; i < n; i++) {
+            if (Double.isNaN(e1[i]) || Double.isNaN(e2[i]) || Double.isNaN(e3[i])) {
+                out[i] = Double.NaN;
+            } else {
+                out[i] = 3 * (e1[i] - e2[i]) + e3[i];
+            }
+        }
+        return out;
+    }
+
+    private double[] fillNaN(int n) {
+        double[] out = new double[n];
+        for (int i = 0; i < n; i++) out[i] = Double.NaN;
+        return out;
+    }
 }
+
