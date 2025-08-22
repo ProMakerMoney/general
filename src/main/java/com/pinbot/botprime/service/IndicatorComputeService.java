@@ -9,8 +9,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -24,39 +23,90 @@ public class IndicatorComputeService {
     public void computeAndStore(String symbol, String timeframe) {
         log.info("INDICATORS: start compute symbol={} tf={}", symbol, timeframe);
 
-        List<Candle> candles = loadCandles(symbol, timeframe);
-        if (candles.isEmpty()) {
+        List<Candle> candles30 = loadCandles(symbol, timeframe);
+        if (candles30.isEmpty()) {
             log.warn("INDICATORS: no candles found for {} {}", symbol, timeframe);
             return;
         }
 
-        List<Double> closes = candles.stream().map(Candle::getClose).collect(Collectors.toList());
-        List<Double> hl2s = candles.stream().map(c -> (c.getHigh() + c.getLow()) / 2.0).collect(Collectors.toList());
+        // ==== EMA и TEMA на 30m ====
+        List<Double> closes30 = candles30.stream().map(Candle::getClose).collect(Collectors.toList());
+        List<Double> hl2s = candles30.stream().map(c -> (c.getHigh() + c.getLow()) / 2.0).collect(Collectors.toList());
 
-        List<Double> ema11  = ema(closes, 11);
-        List<Double> ema30  = ema(closes, 30);
-        List<Double> ema110 = ema(closes, 110);
-        List<Double> ema200 = ema(closes, 200);
+        List<Double> ema11  = ema(closes30, 11);
+        List<Double> ema30  = ema(closes30, 30);
+        List<Double> ema110 = ema(closes30, 110);
+        List<Double> ema200 = ema(closes30, 200);
         List<Double> tema9  = sma(tema(hl2s, 9), 10);  // Pine-style
 
-        int last = candles.size();
+        int last = candles30.size();
         int fromIdx = Math.max(0, last - 10);
+        System.out.println("\n=== [30m] Последние 10 значений индикаторов ===");
         for (int i = fromIdx; i < last; i++) {
-            Candle c = candles.get(i);
+            Candle c = candles30.get(i);
             System.out.printf(
-                    "t=%s | close=%.6f | EMA11=%s | EMA30=%s | EMA110=%s | EMA200=%s | TEMA9=%s%n",
+                    "t=%s | close=%.2f | EMA11=%.6f | EMA30=%.6f | EMA110=%.6f | EMA200=%.6f | TEMA9=%.6f%n",
                     Instant.ofEpochMilli(c.getTime()),
                     c.getClose(),
-                    fmt(ema11.get(i)), fmt(ema30.get(i)), fmt(ema110.get(i)), fmt(ema200.get(i)), fmt(tema9.get(i))
+                    ema11.get(i), ema30.get(i), ema110.get(i), ema200.get(i), tema9.get(i)
             );
         }
 
-        int lastIdx = candles.size() - 1;
-        log.debug("LAST VALUES: EMA11={} EMA30={} EMA110={} EMA200={} TEMA9={}",
-                ema11.get(lastIdx), ema30.get(lastIdx), ema110.get(lastIdx), ema200.get(lastIdx), tema9.get(lastIdx));
+        // ==== RSI на 2h (из 30m свечей) ====
+        List<Candle> candles2h = aggregateTo2h(candles30);
+        List<Double> closes2h = candles2h.stream().map(Candle::getClose).collect(Collectors.toList());
+
+        List<Double> rsi = rsi(closes2h, 14);
+        List<Double> rsiSma = sma(rsi, 20);
+
+        System.out.println("\n=== [2h] Промежуточный вывод RSI + SMA ===");
+        for (int i = 0; i < candles2h.size(); i++) {
+            Candle c = candles2h.get(i);
+            System.out.printf(
+                    "t=%s | close=%.2f | RSI=%.6f | SMA(RSI)=%.6f%n",
+                    Instant.ofEpochMilli(c.getTime()),
+                    c.getClose(),
+                    safe(rsi.get(i)),
+                    safe(rsiSma.get(i))
+            );
+        }
+
+        log.debug("DONE: indicators computed");
     }
 
-    @Transactional(readOnly = true)
+    private List<Candle> aggregateTo2h(List<Candle> candles30) {
+        Map<Long, List<Candle>> grouped = new TreeMap<>();
+
+        for (Candle c : candles30) {
+            long groupTime = floorTo2h(c.getTime());
+            grouped.computeIfAbsent(groupTime, k -> new ArrayList<>()).add(c);
+        }
+
+        List<Candle> result = new ArrayList<>();
+        for (Map.Entry<Long, List<Candle>> entry : grouped.entrySet()) {
+            List<Candle> group = entry.getValue();
+            if (group.size() < 4) continue; // пропускаем неполные свечи
+
+            group.sort(Comparator.comparingLong(Candle::getTime));
+
+            double open = group.get(0).getOpen();
+            double close = group.get(group.size() - 1).getClose();
+            double high = group.stream().mapToDouble(Candle::getHigh).max().orElse(0.0);
+            double low = group.stream().mapToDouble(Candle::getLow).min().orElse(0.0);
+            double volume = group.stream().mapToDouble(Candle::getVolume).sum();
+            double quote = group.stream().mapToDouble(Candle::getQuoteVolume).sum();
+
+            result.add(new Candle(entry.getKey(), open, high, low, close, volume, quote));
+        }
+
+        return result;
+    }
+
+    private long floorTo2h(long timestamp) {
+        // Округление вниз до ближайшего времени кратного 2 часам (в миллисекундах)
+        return timestamp - (timestamp % (2 * 60 * 60 * 1000L));
+    }
+
     public List<Candle> loadCandles(String symbol, String timeframe) {
         List<CandleEntity> rows = candleRepository.findAllOrdered(symbol, timeframe);
         return rows.stream()
@@ -145,6 +195,50 @@ public class IndicatorComputeService {
         return out;
     }
 
+    public static List<Double> rsi(List<Double> series, int period) {
+        List<Double> out = new ArrayList<>();
+        Double prevClose = null;
+        double avgGain = 0.0, avgLoss = 0.0;
+
+        for (int i = 0; i < series.size(); i++) {
+            Double close = series.get(i);
+            if (close == null) {
+                out.add(null);
+                continue;
+            }
+
+            if (prevClose == null) {
+                prevClose = close;
+                out.add(null);
+                continue;
+            }
+
+            double change = close - prevClose;
+            double gain = Math.max(0, change);
+            double loss = Math.max(0, -change);
+
+            if (i <= period) {
+                avgGain += gain;
+                avgLoss += loss;
+                out.add(null);
+            } else if (i == period + 1) {
+                avgGain /= period;
+                avgLoss /= period;
+                double rs = avgLoss == 0 ? 100 : avgGain / avgLoss;
+                out.add(100 - (100 / (1 + rs)));
+            } else {
+                avgGain = (avgGain * (period - 1) + gain) / period;
+                avgLoss = (avgLoss * (period - 1) + loss) / period;
+                double rs = avgLoss == 0 ? 100 : avgGain / avgLoss;
+                out.add(100 - (100 / (1 + rs)));
+            }
+
+            prevClose = close;
+        }
+
+        return out;
+    }
+
     private static List<Double> replaceNullsWithZeros(List<Double> in) {
         List<Double> out = new ArrayList<>(in.size());
         for (Double v : in) out.add(v == null ? 0.0 : v);
@@ -155,7 +249,10 @@ public class IndicatorComputeService {
         return n == null ? 0.0 : n.doubleValue();
     }
 
-    private static String fmt(Double v) {
-        return v == null ? "null" : String.format("%.6f", v);
+    private static double safe(Double v) {
+        return v == null ? 0.0 : v;
     }
 }
+
+
+
