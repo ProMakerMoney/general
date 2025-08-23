@@ -19,6 +19,10 @@ public class IndicatorComputeService {
 
     private final CandleRepository candleRepository;
 
+    public void computeAndLog(String symbol, String timeframe) {
+        computeAndStore(symbol, timeframe);
+    }
+
     @Transactional(readOnly = true)
     public void computeAndStore(String symbol, String timeframe) {
         log.info("INDICATORS: start compute symbol={} tf={}", symbol, timeframe);
@@ -59,8 +63,9 @@ public class IndicatorComputeService {
         List<Double> rsi = rsi(closes2h, 14);
         List<Double> rsiSma = sma(rsi, 20);
 
-        System.out.println("\n=== [2h] Промежуточный вывод RSI + SMA ===");
-        for (int i = 0; i < candles2h.size(); i++) {
+        System.out.println("\n=== [2h] Последние 10 значений RSI + SMA ===");
+        int fromRsi = Math.max(0, candles2h.size() - 10);
+        for (int i = fromRsi; i < candles2h.size(); i++) {
             Candle c = candles2h.get(i);
             System.out.printf(
                     "t=%s | close=%.2f | RSI=%.6f | SMA(RSI)=%.6f%n",
@@ -103,7 +108,6 @@ public class IndicatorComputeService {
     }
 
     private long floorTo2h(long timestamp) {
-        // Округление вниз до ближайшего времени кратного 2 часам (в миллисекундах)
         return timestamp - (timestamp % (2 * 60 * 60 * 1000L));
     }
 
@@ -253,6 +257,3 @@ public class IndicatorComputeService {
         return v == null ? 0.0 : v;
     }
 }
-
-
-
