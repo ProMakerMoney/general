@@ -30,8 +30,6 @@ public class CandleUpdateService {
     @Transactional
     public void updateCandles(String symbol, String timeframe, int limit) {
         try {
-            // Ждем перед запросом, чтобы дождаться закрытия бара
-            Thread.sleep(10_000);
 
             Instant last = candleRepository.findMaxOpenTime(symbol, timeframe);
             List<CandleDto> dtos = bybitClient.getCandles(symbol, timeframe, limit);
