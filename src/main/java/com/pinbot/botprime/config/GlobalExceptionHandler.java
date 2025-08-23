@@ -14,8 +14,8 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<String> handle(Exception ex) {
-        log.log("ERROR", ex.getMessage(), "SYSTEM");
+        ex.printStackTrace();                         // <-- сразу в консоль
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body("Internal error");
+                .body(ex.toString());
     }
 }

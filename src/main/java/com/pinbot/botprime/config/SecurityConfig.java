@@ -84,21 +84,19 @@ public class SecurityConfig {
 
     // 7) Основная цепочка безопасности
     @Bean
-    public SecurityFilterChain securityFilterChain(
-            HttpSecurity http,
-            AuthenticationProvider authProvider,
-            JwtAuthenticationFilter jwtFilter
-    ) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http,
+                                                   AuthenticationProvider authProvider) throws Exception {
         http
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/auth/**").permitAll()
+                        .requestMatchers("/auth/**", "/api/strategy/**", "/api/print").permitAll() // <-- добавили
                         .anyRequest().authenticated()
                 )
                 .authenticationProvider(authProvider)
-                .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
-
+        // убираем фильтр JWT полностью на время тестов
+        // .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
+        ;
         return http.build();
     }
 }

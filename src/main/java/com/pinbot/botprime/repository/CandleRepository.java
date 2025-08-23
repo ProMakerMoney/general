@@ -21,6 +21,15 @@ public interface CandleRepository extends JpaRepository<CandleEntity, CandlePk> 
                             @Param("timeframe") String timeframe);
 
     @Query("""
+           SELECT MIN(c.id.openTime)
+             FROM CandleEntity c
+            WHERE c.id.symbol = :symbol
+              AND c.id.timeframe = :timeframe
+           """)
+    Instant findMinOpenTime(@Param("symbol") String symbol,
+                            @Param("timeframe") String timeframe);
+
+    @Query("""
            SELECT c
              FROM CandleEntity c
             WHERE c.id.symbol = :symbol
@@ -30,5 +39,4 @@ public interface CandleRepository extends JpaRepository<CandleEntity, CandlePk> 
     List<CandleEntity> findAllOrdered(@Param("symbol") String symbol,
                                       @Param("timeframe") String timeframe);
 }
-
 
