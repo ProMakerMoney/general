@@ -90,7 +90,7 @@ public class SecurityConfig {
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/auth/**", "/api/strategy/**", "/api/print").permitAll() // <-- добавили
+                        .requestMatchers("/auth/**", "/api/strategy/**", "/api/print", "/backtest/**").permitAll() // <-- добавили
                         .anyRequest().authenticated()
                 )
                 .authenticationProvider(authProvider)
