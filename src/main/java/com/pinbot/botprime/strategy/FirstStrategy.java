@@ -82,14 +82,14 @@ public class FirstStrategy implements Strategy {
                 if (pos.dir == Dir.LONG) {
                     if (b.low().compareTo(pos.stopPrice) <= 0) {
                         // SL сработал на этом баре по цене стопа
-                        BacktestTrade t = toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice, b.openTime(), b, true);
+                        BacktestTrade t = toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice, nextOpenTime(b, TF), b, true);
                         trades.add(t);
                         pos = null;
                         positionClosedThisBar = true;
                     }
                 } else { // SHORT
                     if (b.high().compareTo(pos.stopPrice) >= 0) {
-                        BacktestTrade t = toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice, b.openTime(), b, true);
+                        BacktestTrade t = toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice, nextOpenTime(b, TF), b, true);
                         trades.add(t);
                         pos = null;
                         positionClosedThisBar = true;
