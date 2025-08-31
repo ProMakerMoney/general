@@ -56,14 +56,14 @@ public class FirstStrategy implements Strategy {
 
         Position pos = null;
         PendingEntry pending = null;
-        WindowAfterSignal1 w1 = null; // активное окно после signal_1 (направленное)
-        WindowAfterSignal2 w2 = null; // активное окно после signal_2 (без направления)
+        WindowAfterSignal1 w1 = null; // окно после signal_1 (направленное)
+        WindowAfterSignal2 w2 = null; // окно после signal_2 (без направления)
 
         for (int i = 0; i < bars.size(); i++) {
             Bar b = bars.get(i);
             Bar prev = i > 0 ? bars.get(i - 1) : null;
 
-            // 1) Активируем отложенный вход на этом баре (OPEN)
+            // 1) Активируем отложенный вход на этом баре (по OPEN)
             if (pending != null && pending.entryIndex == i) {
                 pos = new Position();
                 pos.dir = pending.dir;
@@ -71,48 +71,49 @@ public class FirstStrategy implements Strategy {
                 pos.stopPrice = pending.stopPrice;
                 pos.qtyBtc = pending.qtyBtc;
                 pos.entryTime = b.openTime();
-                // сброс pending
                 pending = null;
             }
 
-            // 2) Если позиция открыта — проверки выхода
+            // 2) Если позиция открыта — сначала проверка SL (интрабар), затем выходы по RSI (на CLOSE)
             boolean positionClosedThisBar = false;
             if (pos != null) {
-                // 2.1) Проверка SL (интрабар):
+                // 2.1) SL (exit_time = open_time следующего бара, exit_price = stop)
                 if (pos.dir == Dir.LONG) {
                     if (b.low().compareTo(pos.stopPrice) <= 0) {
-                        // SL сработал на этом баре по цене стопа
-                        BacktestTrade t = toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice, nextOpenTime(b, TF), b, true);
+                        BacktestTrade t = toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice,
+                                nextOpenTime(b, TF), b, true);
                         trades.add(t);
                         pos = null;
                         positionClosedThisBar = true;
                     }
                 } else { // SHORT
                     if (b.high().compareTo(pos.stopPrice) >= 0) {
-                        BacktestTrade t = toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice, nextOpenTime(b, TF), b, true);
+                        BacktestTrade t = toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice,
+                                nextOpenTime(b, TF), b, true);
                         trades.add(t);
                         pos = null;
                         positionClosedThisBar = true;
                     }
                 }
 
-                // 2.2) Если SL не сработал, проверяем выходы по RSI на CLOSE этого бара
+                // 2.2) Выходы по RSI на CLOSE этого бара (если SL не задело)
                 if (!positionClosedThisBar && prev != null) {
                     BigDecimal rsiPrev = prev.rsi2h();
                     BigDecimal smaPrev = prev.smaRsi2h();
                     BigDecimal rsi = b.rsi2h();
                     BigDecimal sma = b.smaRsi2h();
+
                     if (rsiPrev != null && smaPrev != null && rsi != null && sma != null) {
                         if (pos.dir == Dir.LONG) {
-                            // армирование 75
+                            // Армирование 75
                             if (!pos.armed75 && rsi.compareTo(BigDecimal.valueOf(75)) >= 0) {
                                 pos.armed75 = true;
                             }
                             boolean crossDown = rsiPrev.compareTo(smaPrev) > 0 && rsi.compareTo(sma) <= 0;
                             boolean armed75Exit = pos.armed75 && rsi.compareTo(BigDecimal.valueOf(75)) < 0;
                             if (crossDown || armed75Exit) {
-                                // выходим по CLOSE этого бара
-                                BacktestTrade t = toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice, nextOpenTime(b, TF), b.close());
+                                BacktestTrade t = toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice,
+                                        nextOpenTime(b, TF), b.close());
                                 trades.add(t);
                                 pos = null;
                                 positionClosedThisBar = true;
@@ -124,7 +125,8 @@ public class FirstStrategy implements Strategy {
                             boolean crossUp = rsiPrev.compareTo(smaPrev) < 0 && rsi.compareTo(sma) >= 0;
                             boolean armed35Exit = pos.armed35 && rsi.compareTo(BigDecimal.valueOf(35)) > 0;
                             if (crossUp || armed35Exit) {
-                                BacktestTrade t = toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice, nextOpenTime(b, TF), b.close());
+                                BacktestTrade t = toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice,
+                                        nextOpenTime(b, TF), b.close());
                                 trades.add(t);
                                 pos = null;
                                 positionClosedThisBar = true;
@@ -134,22 +136,20 @@ public class FirstStrategy implements Strategy {
                 }
             }
 
-            // 3) Детект сигналов на баре i
-            boolean s1Long = false;
-            boolean s1Short = false;
-            boolean s2 = false;
+            // 3) Сигналы на баре i
+            boolean s1Long = false, s1Short = false, s2 = false;
             if (prev != null) {
-                s1Long = prev.ema11().compareTo(prev.ema30()) < 0 && b.ema11().compareTo(b.ema30()) >= 0;
+                s1Long  = prev.ema11().compareTo(prev.ema30()) < 0 && b.ema11().compareTo(b.ema30()) >= 0;
                 s1Short = prev.ema11().compareTo(prev.ema30()) > 0 && b.ema11().compareTo(b.ema30()) <= 0;
             }
             s2 = b.low().compareTo(b.ema110()) <= 0 && b.ema110().compareTo(b.high()) <= 0;
 
-            // 4) Окна ожидания (создание/переключение/пролонгация)
+            // 4) Управление окнами
             if (s1Long) {
                 w1 = new WindowAfterSignal1();
                 w1.dir = Dir.LONG;
                 w1.startedAt = i;
-                w1.deadline = i + 2; // включая текущий и 2 следующих
+                w1.deadline = i + 2; // текущий + 2
             } else if (s1Short) {
                 w1 = new WindowAfterSignal1();
                 w1.dir = Dir.SHORT;
@@ -159,54 +159,66 @@ public class FirstStrategy implements Strategy {
             if (s2) {
                 w2 = new WindowAfterSignal2();
                 w2.startedAt = i;
-                w2.deadline = i + 5; // включая текущий и 5 следующих
+                w2.deadline = i + 5; // текущий + 5
             }
 
-            // 5) Проверяем выполнение пар сигналов на текущем баре i
+            // 5) Проверка выполнения пар сигналов
             Dir entryDir = null;
 
-            // Кейс A: сначала был signal_1_(dir), теперь в окне пришёл signal_2
+            // Кейс A: сначала был signal_1(dir), теперь в окне пришёл signal_2
             if (w1 != null && s2 && i <= w1.deadline) {
                 entryDir = w1.dir;
             }
 
-            // Кейс B: сначала был signal_2, теперь в окне пришёл signal_1_(dir)
+            // Кейс B: сначала был signal_2, теперь в окне пришёл signal_1(dir)
             if (w2 != null && i <= w2.deadline && (s1Long || s1Short)) {
                 Dir dirFromS1 = s1Long ? Dir.LONG : Dir.SHORT;
-                // Если одновременно сработали A и B, используем направление по свежему signal_1
+                // Если одновременно и A, и B — берём направление по свежему signal_1
                 entryDir = dirFromS1;
             }
 
-            // 6) Если сформировалась пара — планируем вход на i+1 и обрабатываем переворот
+            // 6) Если пара сформировалась — планируем вход на i+1 (+ переворот при необходимости)
             if (entryDir != null) {
-                // Рассчитать индекс и цену входа
                 int entryIndex = i + 1;
                 if (entryIndex < bars.size()) {
                     Bar entryBar = bars.get(entryIndex);
-                    // Стоп берётся по теме 5 баров до момента входа → индекс stopIdx = entryIndex - 5
-                    int stopIdx = entryIndex - 5;
-                    if (stopIdx >= 0) {
-                        BigDecimal stop = bars.get(stopIdx).tema9();
-                        BigDecimal entryPrice = entryBar.open();
-                        BigDecimal qty = calcQty(entryPrice, stop);
-                        if (qty.compareTo(MIN_QTY) >= 0) {
-                            // Переворот: если позиция открыта — закрыть её на CLOSE(i)
-                            if (pos != null && !positionClosedThisBar) {
-                                BacktestTrade t = toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice, nextOpenTime(b, TF), b.close());
-                                trades.add(t);
-                                pos = null;
+
+                    // Стоп: окно из 6 значений TEMA9 [entryIndex-5 .. entryIndex]
+                    int fromIdx = entryIndex - 5;
+                    if (fromIdx >= 0) {
+                        BigDecimal stop = null;
+                        for (int j = fromIdx; j <= entryIndex; j++) {
+                            BigDecimal t = bars.get(j).tema9();
+                            if (t == null) { stop = null; break; }
+                            if (entryDir == Dir.LONG) {
+                                stop = (stop == null || t.compareTo(stop) < 0) ? t : stop;     // минимум
+                            } else {
+                                stop = (stop == null || t.compareTo(stop) > 0) ? t : stop;     // максимум
                             }
-                            // Запланировать вход
-                            pending = new PendingEntry();
-                            pending.entryIndex = entryIndex;
-                            pending.dir = entryDir;
-                            pending.stopPrice = stop;
-                            pending.entryPrice = entryPrice;
-                            pending.qtyBtc = qty;
+                        }
+                        if (stop != null) {
+                            BigDecimal entryPrice = entryBar.open();
+                            BigDecimal qty = calcQty(entryPrice, stop);
+                            if (qty.compareTo(MIN_QTY) >= 0) {
+                                // Переворот: закрываем текущую по CLOSE(i), если ещё не закрыта
+                                if (pos != null && !positionClosedThisBar) {
+                                    BacktestTrade t = toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice,
+                                            nextOpenTime(b, TF), b.close());
+                                    trades.add(t);
+                                    pos = null;
+                                }
+                                // Планируем вход
+                                pending = new PendingEntry();
+                                pending.entryIndex = entryIndex;
+                                pending.dir = entryDir;
+                                pending.stopPrice = stop;
+                                pending.entryPrice = entryPrice;
+                                pending.qtyBtc = qty;
+                            }
                         }
                     }
                 }
-                // После формирования пары окна сбрасываем
+                // Сброс окон после срабатывания пары
                 w1 = null;
                 w2 = null;
             }
@@ -218,6 +230,7 @@ public class FirstStrategy implements Strategy {
 
         return trades;
     }
+
 
     private static BacktestTrade toTrade(Position pos, Instant entryTime, BigDecimal entryPrice, BigDecimal stopPrice,
                                          Instant exitTime, Bar barForExit, boolean isStop) {
