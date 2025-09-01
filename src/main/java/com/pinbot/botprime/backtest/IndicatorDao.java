@@ -1,10 +1,8 @@
 package com.pinbot.botprime.backtest;
 
-
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
-
 
 import java.math.BigDecimal;
 import java.sql.ResultSet;
@@ -12,17 +10,14 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
 
-
 @Repository
 public class IndicatorDao {
     private final JdbcTemplate jdbc;
 
-
     public IndicatorDao(JdbcTemplate jdbc) { this.jdbc = jdbc; }
 
-
     public List<Bar> fetchAllBarsAsc() {
-// ВАЖНО: названия колонок должны совпадать с вашей таблицей indicator_values
+        // ВАЖНО: названия колонок должны совпадать с вашей таблицей indicator_values
         final String sql = "SELECT open_time, open, high, low, close, ema11, ema30, ema110, tema9, rsi2h, sma_rsi2h FROM indicator_values ORDER BY open_time ASC";
         RowMapper<Bar> rm = (ResultSet rs, int rowNum) -> new Bar(
                 rs.getTimestamp("open_time").toInstant(),
@@ -39,7 +34,6 @@ public class IndicatorDao {
         );
         return jdbc.query(sql, rm);
     }
-
 
     public record Bar(
             Instant openTime,
