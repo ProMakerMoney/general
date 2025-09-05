@@ -23,31 +23,33 @@ public class BacktesterService {
     private final IndicatorDao indicatorDao;
     private final BacktestTradeRepository tradeRepo;
     private final BacktestPnlRepository pnlRepo;
-    private final Strategy strategy = new FirstStrategy(); // можно внедрить как бин при желании
+    private final FirstStrategy strategy;   // <-- 1. инжектим бин
 
     public BacktesterService(IndicatorDao indicatorDao,
                              BacktestTradeRepository tradeRepo,
-                             BacktestPnlRepository pnlRepo) {
+                             BacktestPnlRepository pnlRepo,
+                             FirstStrategy strategy) {   // <-- 2. конструктор
         this.indicatorDao = indicatorDao;
         this.tradeRepo = tradeRepo;
         this.pnlRepo = pnlRepo;
+        this.strategy = strategy;
     }
 
     @Transactional
     public String run() {
-        // Очистка PnL перед очисткой сделок (из-за FK)
+        // очищаем только старые таблицы
         pnlRepo.deleteAllInBatch();
         tradeRepo.deleteAllInBatch();
 
-        // Данные
         var bars = indicatorDao.fetchAllBarsAsc();
         if (bars.isEmpty()) {
             log.info("Данных нет. Сделок не создано.");
             return "Обсчитано 0 сделок. Добавлены в таблицу backtest_trades.";
         }
 
-        // Бэктест стратегии
+        // прогон стратегии (внутри она проставит CROSS / is_impulse)
         List<BacktestTrade> trades = strategy.backtest(bars);
+
 
         // Сохранить сделки и получить их с id
         List<BacktestTrade> saved = tradeRepo.saveAll(trades);

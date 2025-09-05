@@ -2,6 +2,7 @@ package com.pinbot.botprime.strategy;
 
 import com.pinbot.botprime.backtest.IndicatorDao.Bar;
 import com.pinbot.botprime.trade.BacktestTrade;
+import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -13,6 +14,7 @@ import java.util.List;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 
+@Component
 public class FirstStrategy implements Strategy {
 
     // Риск/комиссия/шаги
@@ -123,7 +125,6 @@ public class FirstStrategy implements Strategy {
                             if (crossDown || armed75Exit) {
                                 BacktestTrade t = toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice,
                                         nextOpenTime(b, TF), b.close());
-                                // t.setReason("RSI_CROSS"); // если добавишь reason
                                 trades.add(t);
                                 pos = null;
                                 positionClosedThisBar = true;
@@ -137,7 +138,6 @@ public class FirstStrategy implements Strategy {
                             if (crossUp || armed35Exit) {
                                 BacktestTrade t = toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice,
                                         nextOpenTime(b, TF), b.close());
-                                // t.setReason("RSI_CROSS");
                                 trades.add(t);
                                 pos = null;
                                 positionClosedThisBar = true;
