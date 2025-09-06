@@ -10,32 +10,43 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 /**
- * MainStrategy (упрощённая):
- *  - Входы/окна как в первой стратегии.
- *  - TP1 = 2R (50% объёма), затем стоп остатка = entry (BE), TP2 = финальный выход.
+ * MainStrategy:
+ *  - Входы/окна как раньше.
+ *  - TP1 = 2R (50% объёма), затем стоп остатка = BE, TP2 = финальный выход.
  *  - RSI-выходы только на 2h (сравнение i-4 и i).
- *  - Стоп:
- *      * По умолчанию TEMA9 окно [entry-5..entry] (LONG=min, SHORT=max).
- *      * Если бар-пара импульсный (range_i >= 2 * avgRange5 на i-1..i-5):
- *          - якорь = CROSS на свече signal_1: crossPrice = (ema11[s1] + ema30[s1]) / 2
- *          - если EMA110 (на баре входа) или EMA200 (если есть) находятся «очень близко» к crossPrice,
- *            то для LONG берём МИНИМУМ из {crossPrice, близкие EMA}, для SHORT — МАКСИМУМ.
- *          - если crossPrice не на правильной стороне (для LONG ниже входа, для SHORT выше) — возвращаемся к TEMA9.
- *      * «очень близко» = |EMA - crossPrice| <= nearEps, где nearEps = min(0.30 * avgRange5, 0.003 * entryPrice).
  *
- *  В trade пишем: stop_source (TEMA9 | CROSS | EMA110 | EMA200) и impulse (true/false).
+ *  - Стоп (НОВАЯ ЛОГИКА — как в FirstStrategy):
+ *      * Окно импульсов: [entryIndex-5 .. entryIndex] (6 баров, включая бар входа).
+ *      * Если в окне нет импульса → стоп по TEMA9: LONG = min(TEMA9), SHORT = max(TEMA9) в этом окне.
+ *      * Если в окне есть импульс — берём самую импульсную свечу (по |close-open|/open; при равенстве — более свежую),
+ *        и ищем кандидаты-уровни:
+ *          - EMA110 и EMA200 на баре импульса,
+ *          - уровни кросса EMA11/EMA30 в окне (уровень = (ema11+ema30)/2 на баре кросса).
+ *        Для LONG — сначала в нижней половине тела импульса, для SHORT — в верхней половине;
+ *        если нет попаданий — расширяем зону ещё на пол-тела наружу (LONG — вниз; SHORT — вверх).
+ *        Если кандидатов нет вовсе → fallback на TEMA9 (как выше).
+ *        Если кандидаты есть:
+ *          - Если разница между min и max кандидатов < 0.03% (к среднему) — LONG берём min, SHORT — max.
+ *          - Иначе LONG — min, SHORT — max.
+ *        Источник стопа пишем в stop_source: TEMA9 | EMA110 | EMA200 | CROSS.
+ *
+ *  В trade пишем: stop_source и impulse (true/false, был ли импульс в окне).
  */
 public class MainStrategy {
 
-    // Риск/комиссия/шаги – как оговаривали
+    // Риск/комиссия/шаги
     private static final BigDecimal RISK_USDT = new BigDecimal("100");
     private static final BigDecimal FEE_RATE  = new BigDecimal("0.0011"); // 0.055% * 2
     private static final BigDecimal MIN_QTY   = new BigDecimal("0.001");
     private static final BigDecimal STEP_QTY  = new BigDecimal("0.001");
     private static final Duration   TF        = Duration.ofMinutes(30);
+
+    // Порог эквивалентности уровней (0.03%)
+    private static final BigDecimal EQUIV_REL = new BigDecimal("0.0003");
 
     enum Dir { LONG, SHORT }
 
@@ -46,7 +57,7 @@ public class MainStrategy {
         BigDecimal entryPrice;
         BigDecimal qtyBtc;
         String stopSource;   // TEMA9 | CROSS | EMA110 | EMA200
-        boolean impulse;     // флаг импульса на баре пары
+        boolean impulse;     // в окне был импульс
     }
 
     private static class Position {
@@ -73,13 +84,19 @@ public class MainStrategy {
         boolean impulse;
     }
 
-    /** Окно после signal_1: храним индекс бара s1 для crossPrice */
-    private static class WindowAfterSignal1 {
-        Dir dir; int startedAt; int deadline; int s1Index;
-    }
+    private static class WindowAfterSignal1 { Dir dir; int startedAt; int deadline; int s1Index; }
     private static class WindowAfterSignal2 { int startedAt; int deadline; }
 
-    /** Главный метод прогона */
+    /** Результат расчёта стопа */
+    private static class StopCalcResult {
+        final BigDecimal stop;
+        final String source;   // TEMA9 | EMA110 | EMA200 | CROSS
+        final boolean impulse; // был ли импульс в окне
+        StopCalcResult(BigDecimal stop, String source, boolean impulse) {
+            this.stop = stop; this.source = source; this.impulse = impulse;
+        }
+    }
+
     public List<MainBacktestTrade> backtest(List<Bar> bars) {
         List<MainBacktestTrade> trades = new ArrayList<>();
         if (bars == null || bars.size() < 10) return trades;
@@ -199,13 +216,9 @@ public class MainStrategy {
 
             // 5) Пара сформирована?
             Dir entryDir = null;
-            Integer s1IndexForPair = null;
-
-            if (w1 != null && s2 && i <= w1.deadline) { // s1 -> s2
-                entryDir = w1.dir; s1IndexForPair = w1.s1Index;
-            }
-            if (w2 != null && i <= w2.deadline && (s1Long || s1Short)) { // s2 -> s1
-                entryDir = s1Long ? Dir.LONG : Dir.SHORT; s1IndexForPair = i;
+            if (w1 != null && s2 && i <= w1.deadline) { entryDir = w1.dir; }
+            if (w2 != null && i <= w2.deadline && (s1Long || s1Short)) {
+                entryDir = s1Long ? Dir.LONG : Dir.SHORT;
             }
 
             // 6) Переворот
@@ -220,116 +233,25 @@ public class MainStrategy {
                 if (entryIndex < bars.size()) {
                     Bar entryBar = bars.get(entryIndex);
 
-                    // 7.1) Базовый стоп по TEMA9 (окно из 6 баров)
-                    int fromIdx = entryIndex - 5;
-                    if (fromIdx >= 0) {
-                        BigDecimal stopTema = null;
-                        for (int j = fromIdx; j <= entryIndex; j++) {
-                            BigDecimal t9 = bars.get(j).tema9();
-                            if (t9 == null) { stopTema = null; break; }
-                            if (entryDir == Dir.LONG)
-                                stopTema = (stopTema==null || t9.compareTo(stopTema)<0) ? t9 : stopTema; // min
-                            else
-                                stopTema = (stopTema==null || t9.compareTo(stopTema)>0) ? t9 : stopTema; // max
-                        }
-                        if (stopTema != null) {
-                            // 7.2) Импульс на баре пары (i): range_i >= 2 * avgRange5 (i-1..i-5)
-                            BigDecimal avgRange5 = avgRange5(bars, i);
-                            boolean impulse = false;
-                            if (avgRange5 != null) {
-                                BigDecimal rangeI = bars.get(i).high().subtract(bars.get(i).low()).abs();
-                                impulse = rangeI.compareTo(avgRange5.multiply(new BigDecimal("2"))) >= 0;
-                            }
+                    // === НОВЫЙ расчёт стопа (как в FirstStrategy) ===
+                    StopCalcResult sc = computeStopForEntry(bars, entryIndex, entryDir);
 
-                            // 7.3) Выбор стопа
-                            BigDecimal entryPrice = entryBar.open();
-                            String stopSource = "TEMA9";
-                            BigDecimal stopFinal = stopTema;
-
-                            if (impulse) {
-                                // crossPrice = (ema11 + ema30) / 2 на баре s1
-                                BigDecimal crossPrice = null;
-                                if (s1IndexForPair != null && s1IndexForPair >= 0 && s1IndexForPair < bars.size()) {
-                                    BigDecimal e11 = bars.get(s1IndexForPair).ema11();
-                                    BigDecimal e30 = bars.get(s1IndexForPair).ema30();
-                                    if (e11 != null && e30 != null) {
-                                        crossPrice = e11.add(e30).divide(new BigDecimal("2"), 10, RoundingMode.HALF_UP);
-                                    }
-                                }
-                                // cross должен быть на правильной стороне
-                                boolean crossOnSide = false;
-                                if (crossPrice != null) {
-                                    crossOnSide = (entryDir == Dir.LONG)
-                                            ? crossPrice.compareTo(entryPrice) < 0
-                                            : crossPrice.compareTo(entryPrice) > 0;
-                                }
-
-                                if (crossOnSide) {
-                                    // радиус близости
-                                    BigDecimal nearEps = null;
-                                    if (avgRange5 != null) {
-                                        BigDecimal byRange = avgRange5.multiply(new BigDecimal("0.30"));
-                                        BigDecimal byPct   = entryPrice.multiply(new BigDecimal("0.003")); // 0.3%
-                                        nearEps = byRange.min(byPct);
-                                    }
-
-                                    // кандидаты: CROSS + близкие EMA110/EMA200
-                                    BigDecimal candCross = crossPrice;
-                                    BigDecimal cand110 = entryBar.ema110();
-                                    BigDecimal cand200 = safeEma200(entryBar); // через отражение, если есть метод
-
-                                    // фильтр «близости» и правильной стороны
-                                    List<BigDecimal> cands = new ArrayList<>();
-                                    cands.add(candCross);
-                                    if (nearEps != null) {
-                                        if (cand110 != null && isOnSide(cand110, entryPrice, entryDir)
-                                                && abs(cand110.subtract(candCross)).compareTo(nearEps) <= 0) {
-                                            cands.add(cand110);
-                                        }
-                                        if (cand200 != null && isOnSide(cand200, entryPrice, entryDir)
-                                                && abs(cand200.subtract(candCross)).compareTo(nearEps) <= 0) {
-                                            cands.add(cand200);
-                                        }
-                                    }
-
-                                    if (!cands.isEmpty()) {
-                                        if (entryDir == Dir.LONG) {
-                                            // берём МИНИМУМ из близких к cross
-                                            BigDecimal chosen = cands.get(0);
-                                            for (BigDecimal v : cands) if (v.compareTo(chosen) < 0) chosen = v;
-                                            stopFinal = chosen;
-                                        } else {
-                                            // SHORT — МАКСИМУМ
-                                            BigDecimal chosen = cands.get(0);
-                                            for (BigDecimal v : cands) if (v.compareTo(chosen) > 0) chosen = v;
-                                            stopFinal = chosen;
-                                        }
-                                        stopSource = resolveSource(stopFinal, candCross, cand110, cand200);
-                                    } else {
-                                        stopFinal = candCross;
-                                        stopSource = "CROSS";
-                                    }
-                                } // иначе остаётся TEMA9
-                            }
-
-                            // 7.4) Расчёт объёма и постановка PendingEntry
-                            if (stopFinal != null) {
-                                BigDecimal qty = calcQty(entryPrice, stopFinal);
-                                if (qty.compareTo(MIN_QTY) >= 0) {
-                                    pending = new PendingEntry();
-                                    pending.entryIndex = entryIndex;
-                                    pending.dir        = entryDir;
-                                    pending.stopPrice  = scale2(stopFinal);
-                                    pending.entryPrice = scale2(entryPrice);
-                                    pending.qtyBtc     = qty;
-                                    pending.stopSource = stopSource;
-                                    pending.impulse    = impulse;
-                                }
-                            }
+                    if (sc != null && sc.stop != null) {
+                        BigDecimal entryPrice = entryBar.open();
+                        BigDecimal qty = calcQty(entryPrice, sc.stop);
+                        if (qty.compareTo(MIN_QTY) >= 0) {
+                            pending = new PendingEntry();
+                            pending.entryIndex = entryIndex;
+                            pending.dir        = entryDir;
+                            pending.stopPrice  = scale2(sc.stop);
+                            pending.entryPrice = scale2(entryPrice);
+                            pending.qtyBtc     = qty;
+                            pending.stopSource = sc.source != null ? sc.source : "TEMA9";
+                            pending.impulse    = sc.impulse;
                         }
                     }
                 }
-                // сбрасываем окна
+                // сброс окон
                 w1 = null; w2 = null;
             }
 
@@ -341,7 +263,179 @@ public class MainStrategy {
         return trades;
     }
 
-    // ===== Helpers =====
+    // ====== НОВОЕ: ЛОГИКА СТОПА (как в FirstStrategy) ======
+
+    private StopCalcResult computeStopForEntry(List<Bar> bars, int entryIndex, Dir dir) {
+        // Окно импульсов: [entryIndex-5 .. entryIndex]
+        int from = Math.max(0, entryIndex - 5);
+        int to   = entryIndex;
+
+        Integer impIdx = findStrongestImpulseInWindow(bars, from, to);
+        boolean impulse = (impIdx != null);
+
+        // Fallback: если нет импульса — TEMA9 (min/max) в окне
+        if (impIdx == null) {
+            BigDecimal stop = stopByTema9Window(bars, entryIndex, dir);
+            return new StopCalcResult(stop, "TEMA9", false);
+        }
+
+        Bar imp = bars.get(impIdx);
+
+        // Тело импульсной свечи
+        BigDecimal open  = imp.open();
+        BigDecimal close = imp.close();
+        BigDecimal bodyHigh = open.max(close);
+        BigDecimal bodyLow  = open.min(close);
+        BigDecimal body = bodyHigh.subtract(bodyLow);
+
+        if (body.signum() <= 0) {
+            BigDecimal stop = stopByTema9Window(bars, entryIndex, dir);
+            return new StopCalcResult(stop, "TEMA9", true);
+        }
+
+        BigDecimal half = body.divide(new BigDecimal("2"), 10, RoundingMode.HALF_UP);
+        BigDecimal mid  = bodyLow.add(half);
+
+        // Зоны
+        Range zone1 = (dir == Dir.LONG) ? new Range(bodyLow, mid) : new Range(mid, bodyHigh);
+        Range zone2 = (dir == Dir.LONG) ? new Range(bodyLow.subtract(half), bodyLow)
+                : new Range(bodyHigh, bodyHigh.add(half));
+
+        // Кандидаты с источниками
+        List<Cand> cands = new ArrayList<>();
+
+        addIfInZone(cands, new Cand(imp.ema110(), "EMA110"), zone1);
+        addIfInZone(cands, new Cand(imp.ema200(), "EMA200"), zone1);
+        for (Integer crossIdx : findCrossIdxInWindow(bars, from, to)) {
+            BigDecimal lvl = avg(bars.get(crossIdx).ema11(), bars.get(crossIdx).ema30());
+            addIfInZone(cands, new Cand(lvl, "CROSS"), zone1);
+        }
+
+        if (cands.isEmpty()) {
+            addIfInZone(cands, new Cand(imp.ema110(), "EMA110"), zone2);
+            addIfInZone(cands, new Cand(imp.ema200(), "EMA200"), zone2);
+            for (Integer crossIdx : findCrossIdxInWindow(bars, from, to)) {
+                BigDecimal lvl = avg(bars.get(crossIdx).ema11(), bars.get(crossIdx).ema30());
+                addIfInZone(cands, new Cand(lvl, "CROSS"), zone2);
+            }
+        }
+
+        if (cands.isEmpty()) {
+            BigDecimal stop = stopByTema9Window(bars, entryIndex, dir);
+            return new StopCalcResult(stop, "TEMA9", true);
+        }
+
+        // Правило выбора
+        cands.sort(Comparator.comparing(c -> c.level));
+        BigDecimal min = cands.get(0).level;
+        BigDecimal max = cands.get(cands.size() - 1).level;
+
+        BigDecimal chosenLevel = areEquivalent(min, max)
+                ? (dir == Dir.LONG ? min : max)
+                : (dir == Dir.LONG ? min : max);
+
+        // Источник выбранного уровня
+        String source = "TEMA9";
+        for (Cand c : cands) {
+            if (c.level.compareTo(chosenLevel) == 0) {
+                source = c.source;
+                break;
+            }
+        }
+
+        return new StopCalcResult(chosenLevel, source, true);
+    }
+
+    private static class Cand {
+        final BigDecimal level; final String source;
+        Cand(BigDecimal level, String source) { this.level = level; this.source = source; }
+    }
+
+    /** Общее правило: LONG — min(TEMA9), SHORT — max(TEMA9) в окне [entryIndex-5 .. entryIndex]. */
+    private BigDecimal stopByTema9Window(List<Bar> bars, int entryIndex, Dir dir) {
+        int from = Math.max(0, entryIndex - 5);
+        int to   = entryIndex;
+
+        BigDecimal best = null;
+        for (int j = from; j <= to; j++) {
+            BigDecimal t9 = bars.get(j).tema9();
+            if (t9 == null) continue;
+            if (best == null) best = t9;
+            else best = (dir == Dir.LONG) ? best.min(t9) : best.max(t9);
+        }
+        return best;
+    }
+
+    private static class Range {
+        final BigDecimal lo, hi;
+        Range(BigDecimal a, BigDecimal b) { this.lo = a.min(b); this.hi = a.max(b); }
+        boolean containsInclusive(BigDecimal x) {
+            return x != null && x.compareTo(lo) >= 0 && x.compareTo(hi) <= 0;
+        }
+    }
+
+    private static void addIfInZone(List<Cand> dst, Cand cand, Range zone) {
+        if (cand.level != null && zone.containsInclusive(cand.level)) dst.add(cand);
+    }
+
+    private static BigDecimal avg(BigDecimal a, BigDecimal b) {
+        if (a == null || b == null) return null;
+        return a.add(b).divide(new BigDecimal("2"), 10, RoundingMode.HALF_UP);
+    }
+
+    /** Самая импульсная свеча в окне [from..to] по |close-open|/open; при равенстве — более свежая. */
+    private Integer findStrongestImpulseInWindow(List<Bar> bars, int from, int to) {
+        Integer bestIdx = null;
+        BigDecimal bestScore = null;
+
+        for (int i = Math.max(0, from); i <= Math.min(to, bars.size()-1); i++) {
+            Bar b = bars.get(i);
+            boolean imp = false;
+            try { imp = b.isImpulse(); } catch (Throwable ignore) { /* если поля нет */ }
+            if (!imp) continue;
+
+            BigDecimal open = b.open();
+            BigDecimal close = b.close();
+            if (open == null || open.signum() == 0 || close == null) continue;
+
+            BigDecimal score = close.subtract(open).abs()
+                    .divide(open.abs(), 10, RoundingMode.HALF_UP);
+            if (bestIdx == null || score.compareTo(bestScore) > 0
+                    || (score.compareTo(bestScore) == 0 && i > bestIdx)) {
+                bestIdx = i; bestScore = score;
+            }
+        }
+        return bestIdx;
+    }
+
+    /** Индексы баров, где есть кросс EMA11/EMA30 в окне [from..to] (включительно). */
+    private List<Integer> findCrossIdxInWindow(List<Bar> bars, int from, int to) {
+        List<Integer> res = new ArrayList<>();
+        int lo = Math.max(1, from); // нужен prev
+        int hi = Math.min(to, bars.size()-1);
+        for (int i = lo; i <= hi; i++) {
+            Bar prev = bars.get(i - 1);
+            Bar cur  = bars.get(i);
+            if (prev.ema11() == null || prev.ema30() == null || cur.ema11() == null || cur.ema30() == null) continue;
+
+            boolean up   = prev.ema11().compareTo(prev.ema30()) < 0 && cur.ema11().compareTo(cur.ema30()) >= 0;
+            boolean down = prev.ema11().compareTo(prev.ema30()) > 0 && cur.ema11().compareTo(cur.ema30()) <= 0;
+            if (up || down) res.add(i);
+        }
+        return res;
+    }
+
+    /** Эквивалентность значений: |a-b| / ((a+b)/2) <= 0.0003 (0.03%) */
+    private boolean areEquivalent(BigDecimal a, BigDecimal b) {
+        if (a == null || b == null) return false;
+        BigDecimal diff = a.subtract(b).abs();
+        BigDecimal mean = a.add(b).divide(new BigDecimal("2"), 10, RoundingMode.HALF_UP);
+        if (mean.signum() == 0) return diff.signum() == 0;
+        BigDecimal rel = diff.divide(mean, 10, RoundingMode.HALF_UP);
+        return rel.compareTo(EQUIV_REL) <= 0;
+    }
+
+    // ===== Прочие хелперы (без изменений) =====
 
     private static Instant nextOpenTime(Bar b) { return b.openTime().plus(TF); }
 
@@ -367,41 +461,6 @@ public class MainStrategy {
     }
 
     private static BigDecimal scale2(BigDecimal v) { return v.setScale(2, RoundingMode.HALF_UP); }
-    private static BigDecimal abs(BigDecimal v) { return v.signum() >= 0 ? v : v.negate(); }
-
-    private static boolean isOnSide(BigDecimal level, BigDecimal entry, Dir dir) {
-        return (dir == Dir.LONG) ? level.compareTo(entry) < 0 : level.compareTo(entry) > 0;
-    }
-
-    /** Средний диапазон 5 предыдущих баров для индекса i; если недостаточно данных — null */
-    private static BigDecimal avgRange5(List<Bar> bars, int i) {
-        if (i < 5) return null;
-        BigDecimal sum = BigDecimal.ZERO;
-        for (int k = i - 5; k <= i - 1; k++) {
-            BigDecimal range = bars.get(k).high().subtract(bars.get(k).low()).abs();
-            sum = sum.add(range);
-        }
-        return sum.divide(new BigDecimal("5"), 10, RoundingMode.HALF_UP);
-    }
-
-    /** Попытка получить ema200() у Bar через reflection (если нет — вернём null) */
-    private static BigDecimal safeEma200(Bar bar) {
-        try {
-            var m = bar.getClass().getMethod("ema200");
-            Object v = m.invoke(bar);
-            return (v instanceof BigDecimal) ? (BigDecimal) v : null;
-        } catch (Exception ignore) {
-            return null;
-        }
-    }
-
-    /** Определяем, от какого источника выбран финальный стоп */
-    private static String resolveSource(BigDecimal chosen, BigDecimal cross, BigDecimal ema110, BigDecimal ema200) {
-        if (cross != null && chosen.compareTo(cross) == 0)   return "CROSS";
-        if (ema110 != null && chosen.compareTo(ema110) == 0) return "EMA110";
-        if (ema200 != null && chosen.compareTo(ema200) == 0) return "EMA200";
-        return "TEMA9";
-    }
 
     private static MainBacktestTrade buildTrade(Position pos, Instant exitTime, BigDecimal exitPrice, String reason) {
         MainBacktestTrade t = new MainBacktestTrade();
@@ -420,4 +479,3 @@ public class MainStrategy {
         return t;
     }
 }
-
