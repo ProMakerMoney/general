@@ -136,7 +136,7 @@ public class IndicatorComputeService {
      * Счёт ведётся по закрытию бара.
      */
     private void applyImpulseFlags(List<IndicatorValueEntity> rows, List<Candle> candles) {
-        final BigDecimal MULT = new BigDecimal("2.5");
+        final BigDecimal MULT = new BigDecimal("3.0");
         final int WINDOW = 5;
         final int SCALE = 6; // внутренняя точность вычислений (в БД сохраняем boolean)
 

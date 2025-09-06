@@ -8,7 +8,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.PreparedStatement;
 import java.sql.Timestamp;
-import java.time.Instant;
 import java.util.List;
 
 @Repository
@@ -17,20 +16,23 @@ public class IndicatorValueRepositoryImpl implements IndicatorValueRepositoryCus
 
     private final JdbcTemplate jdbc;
 
+    // ДОБАВЛЕНА колонка is_impulse и её обновление в ON CONFLICT
     private static final String UPSERT_SQL = """
         INSERT INTO indicator_values
           (symbol, timeframe, open_time,
            open, high, low, close,
            volume, quote_volume,
            ema11, ema30, ema110, ema200,
-           tema9, rsi2h, sma_rsi2h)
+           tema9, rsi2h, sma_rsi2h,
+           is_impulse)
         SELECT *
-        FROM unnest(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        FROM unnest(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           AS t(symbol, timeframe, open_time,
                open, high, low, close,
                volume, quote_volume,
                ema11, ema30, ema110, ema200,
-               tema9, rsi2h, sma_rsi2h)
+               tema9, rsi2h, sma_rsi2h,
+               is_impulse)
         ON CONFLICT (symbol, timeframe, open_time) DO UPDATE
         SET open         = EXCLUDED.open,
             high         = EXCLUDED.high,
@@ -44,7 +46,8 @@ public class IndicatorValueRepositoryImpl implements IndicatorValueRepositoryCus
             ema200       = EXCLUDED.ema200,
             tema9        = EXCLUDED.tema9,
             rsi2h        = EXCLUDED.rsi2h,
-            sma_rsi2h    = EXCLUDED.sma_rsi2h
+            sma_rsi2h    = EXCLUDED.sma_rsi2h,
+            is_impulse   = EXCLUDED.is_impulse
         """;
 
     @Override
@@ -52,7 +55,7 @@ public class IndicatorValueRepositoryImpl implements IndicatorValueRepositoryCus
     public void upsertBatchArrays(List<IndicatorValueEntity> rows) {
         if (rows == null || rows.isEmpty()) return;
 
-        final int CHUNK = 2000; // ~16 * 2000 = 32k параметров если бы внезапно снова развернуло
+        final int CHUNK = 2000;
         for (int off = 0; off < rows.size(); off += CHUNK) {
             List<IndicatorValueEntity> part = rows.subList(off, Math.min(off + CHUNK, rows.size()));
 
@@ -63,7 +66,7 @@ public class IndicatorValueRepositoryImpl implements IndicatorValueRepositoryCus
                 ps.setArray(1,  con.createArrayOf("text", part.stream().map(IndicatorValueEntity::getSymbol).toArray(String[]::new)));
                 ps.setArray(2,  con.createArrayOf("text", part.stream().map(IndicatorValueEntity::getTimeframe).toArray(String[]::new)));
 
-                // timestamp[]
+                // timestamp[]  (если колонка timestamptz — драйвер сам кастанёт)
                 ps.setArray(3,  con.createArrayOf("timestamp",
                         part.stream().map(IndicatorValueEntity::getOpen_time).map(Timestamp::from).toArray(Timestamp[]::new)));
 
@@ -84,8 +87,12 @@ public class IndicatorValueRepositoryImpl implements IndicatorValueRepositoryCus
                 ps.setArray(15, con.createArrayOf("float8", part.stream().map(IndicatorValueEntity::getRsi2h).toArray()));
                 ps.setArray(16, con.createArrayOf("float8", part.stream().map(IndicatorValueEntity::getSmaRsi2h).toArray()));
 
+                // boolean[]  — НОВОЕ: прокидываем флаг импульса
+                ps.setArray(17, con.createArrayOf("boolean", part.stream().map(IndicatorValueEntity::isImpulse).toArray(Boolean[]::new)));
+
                 return ps;
             });
         }
     }
 }
+
