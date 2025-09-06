@@ -17,15 +17,18 @@ import java.util.List;
 @Component
 public class FirstStrategy implements Strategy {
 
-    // Риск/комиссия/шаги
-    private static final BigDecimal RISK_USDT = new BigDecimal("100");
-    private static final BigDecimal FEE_RATE  = new BigDecimal("0.0011"); // 0.055% * 2
+    // Комиссия/шаги/ТФ
+    private static final BigDecimal FEE_RATE  = new BigDecimal("0.0011"); // 0.055% * 2 (раунд-трип)
     private static final BigDecimal MIN_QTY   = new BigDecimal("0.001");
     private static final BigDecimal STEP_QTY  = new BigDecimal("0.001");
     private static final Duration   TF        = Duration.ofMinutes(30);
 
     // Порог «эквивалентности» уровней (0.03%)
     private static final BigDecimal EQUIV_REL = new BigDecimal("0.0003"); // 0.03% как доля
+
+    // Day-1 депозит и риск на сделку
+    private static final BigDecimal INITIAL_DEPOSIT = new BigDecimal("20000.00");
+    private static final BigDecimal RISK_PCT        = new BigDecimal("0.02"); // 2%
 
     enum Dir { LONG, SHORT }
 
@@ -67,6 +70,9 @@ public class FirstStrategy implements Strategy {
         List<BacktestTrade> trades = new ArrayList<>();
         if (bars == null || bars.size() < 10) return trades;
 
+        // ===== динамический депозит =====
+        BigDecimal deposit = INITIAL_DEPOSIT;
+
         Position pos = null;
         PendingEntry pending = null;
         WindowAfterSignal1 w1 = null;
@@ -93,17 +99,20 @@ public class FirstStrategy implements Strategy {
                 // 2.1) SL
                 if (pos.dir == Dir.LONG) {
                     if (b.low().compareTo(pos.stopPrice) <= 0) {
-                        BacktestTrade t = toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice,
-                                nextOpenTime(b, TF), b, true);
-                        trades.add(t);
+                        BigDecimal exitPrice = scale2(pos.stopPrice);
+                        trades.add(toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice,
+                                nextOpenTime(b, TF), b, true));
+                        // обновляем депозит (net, с комиссиями по модели sizing)
+                        deposit = deposit.add(pnlNet(pos.dir, pos.entryPrice, exitPrice, pos.qtyBtc));
                         pos = null;
                         positionClosedThisBar = true;
                     }
                 } else { // SHORT
                     if (b.high().compareTo(pos.stopPrice) >= 0) {
-                        BacktestTrade t = toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice,
-                                nextOpenTime(b, TF), b, true);
-                        trades.add(t);
+                        BigDecimal exitPrice = scale2(pos.stopPrice);
+                        trades.add(toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice,
+                                nextOpenTime(b, TF), b, true));
+                        deposit = deposit.add(pnlNet(pos.dir, pos.entryPrice, exitPrice, pos.qtyBtc));
                         pos = null;
                         positionClosedThisBar = true;
                     }
@@ -125,9 +134,10 @@ public class FirstStrategy implements Strategy {
                             boolean armed75Exit = pos.armed75 && rsi.compareTo(BigDecimal.valueOf(75)) < 0;
 
                             if (crossDown || armed75Exit) {
-                                BacktestTrade t = toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice,
-                                        nextOpenTime(b, TF), b.close());
-                                trades.add(t);
+                                BigDecimal exitPrice = scale2(b.close());
+                                trades.add(toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice,
+                                        nextOpenTime(b, TF), b.close()));
+                                deposit = deposit.add(pnlNet(pos.dir, pos.entryPrice, exitPrice, pos.qtyBtc));
                                 pos = null;
                                 positionClosedThisBar = true;
                             }
@@ -138,9 +148,10 @@ public class FirstStrategy implements Strategy {
                             boolean armed35Exit  = pos.armed35 && rsi.compareTo(BigDecimal.valueOf(35)) > 0;
 
                             if (crossUp || armed35Exit) {
-                                BacktestTrade t = toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice,
-                                        nextOpenTime(b, TF), b.close());
-                                trades.add(t);
+                                BigDecimal exitPrice = scale2(b.close());
+                                trades.add(toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice,
+                                        nextOpenTime(b, TF), b.close()));
+                                deposit = deposit.add(pnlNet(pos.dir, pos.entryPrice, exitPrice, pos.qtyBtc));
                                 pos = null;
                                 positionClosedThisBar = true;
                             }
@@ -193,27 +204,34 @@ public class FirstStrategy implements Strategy {
                 if (entryIndex < bars.size()) {
                     Bar entryBar = bars.get(entryIndex);
 
-                    // === НОВОЕ ПРАВИЛО СТОПА ===
+                    // === стоп по вашим правилам (импульс + fallback) ===
                     BigDecimal stop = computeStopForEntry(bars, entryIndex, entryDir);
 
                     if (stop != null) {
                         BigDecimal entryPrice = entryBar.open();
-                        BigDecimal qty = calcQty(entryPrice, stop);
-                        if (qty.compareTo(MIN_QTY) >= 0) {
-                            // Переворот: закрыть текущую на CLOSE(i), если ещё не закрыта
-                            if (pos != null && !positionClosedThisBar) {
-                                BacktestTrade t = toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice,
-                                        nextOpenTime(b, TF), b.close());
-                                trades.add(t);
-                                pos = null;
+
+                        // === динамический риск от текущего депозита ===
+                        if (deposit.compareTo(BigDecimal.ZERO) > 0) {
+                            BigDecimal riskUsdt = deposit.multiply(RISK_PCT); // 2% от текущего депо
+                            BigDecimal qty = calcQty(entryPrice, stop, riskUsdt);
+
+                            if (qty.compareTo(MIN_QTY) >= 0) {
+                                // Переворот: закрыть текущую на CLOSE(i), если ещё не закрыта
+                                if (pos != null && !positionClosedThisBar) {
+                                    BigDecimal exitPrice = scale2(b.close());
+                                    trades.add(toTrade(pos, pos.entryTime, pos.entryPrice, pos.stopPrice,
+                                            nextOpenTime(b, TF), b.close()));
+                                    deposit = deposit.add(pnlNet(pos.dir, pos.entryPrice, exitPrice, pos.qtyBtc));
+                                    pos = null;
+                                }
+                                // Запланировать вход
+                                pending = new PendingEntry();
+                                pending.entryIndex = entryIndex;
+                                pending.dir        = entryDir;
+                                pending.stopPrice  = stop;
+                                pending.entryPrice = entryPrice;
+                                pending.qtyBtc     = qty;
                             }
-                            // Запланировать вход
-                            pending = new PendingEntry();
-                            pending.entryIndex = entryIndex;
-                            pending.dir        = entryDir;
-                            pending.stopPrice  = stop;
-                            pending.entryPrice = entryPrice;
-                            pending.qtyBtc     = qty;
                         }
                     }
                 }
@@ -405,7 +423,7 @@ public class FirstStrategy implements Strategy {
         return rel.compareTo(EQUIV_REL) <= 0;
     }
 
-    // ===== Остальные хелперы (без изменений) =====
+    // ===== Остальные хелперы =====
 
     private static BacktestTrade toTrade(
             Position pos,
@@ -454,15 +472,27 @@ public class FirstStrategy implements Strategy {
         return b.openTime().plus(tf);
     }
 
-    private static BigDecimal calcQty(BigDecimal entry, BigDecimal stop) {
+    /** sizing с учётом заданного риска в USD */
+    private static BigDecimal calcQty(BigDecimal entry, BigDecimal stop, BigDecimal riskUsdt) {
+        if (riskUsdt == null || riskUsdt.compareTo(BigDecimal.ZERO) <= 0) return BigDecimal.ZERO;
         BigDecimal delta = entry.subtract(stop).abs();
         BigDecimal denom = delta.add(entry.multiply(FEE_RATE));
         if (denom.signum() == 0) return BigDecimal.ZERO;
 
-        BigDecimal raw = RISK_USDT.divide(denom, 10, RoundingMode.HALF_UP);
+        BigDecimal raw = riskUsdt.divide(denom, 10, RoundingMode.HALF_UP);
         BigDecimal floored = floorToStep(raw, STEP_QTY);
         if (floored.compareTo(MIN_QTY) < 0) return MIN_QTY;
         return floored;
+    }
+
+    /** net-PnL по той же модели комиссий, что в calcQty (комиссия считается как entry*qty*FEE_RATE) */
+    private static BigDecimal pnlNet(Dir dir, BigDecimal entry, BigDecimal exit, BigDecimal qty) {
+        BigDecimal signGross = (dir == Dir.LONG)
+                ? exit.subtract(entry)
+                : entry.subtract(exit);
+        BigDecimal gross = signGross.multiply(qty);
+        BigDecimal fees  = entry.multiply(qty).multiply(FEE_RATE); // раунд-трип как в sizing
+        return scale2(gross.subtract(fees));
     }
 
     private static BigDecimal floorToStep(BigDecimal value, BigDecimal step) {
@@ -480,4 +510,3 @@ public class FirstStrategy implements Strategy {
     private static BigDecimal scale2(BigDecimal v) { return v.setScale(2, RoundingMode.HALF_UP); }
     private static BigDecimal scale3(BigDecimal v) { return v.setScale(3, RoundingMode.HALF_UP); }
 }
-

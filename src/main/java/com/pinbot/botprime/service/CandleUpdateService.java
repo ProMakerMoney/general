@@ -12,7 +12,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -27,29 +28,44 @@ public class CandleUpdateService {
     private final CandleMapper candleMapper;
 
     /**
-     * Догружает исторические свечи за последний год пачками по 1000,
+     * Догружает исторические свечи за последние ТРИ года пачками по 1000,
      * делая паузу 500 мс между запросами.
+     * (Метод оставлен для совместимости, теперь грузит 3 года.)
      */
     @Transactional
     public void backfillYear(String symbol, String timeframe) {
+        backfillYears(symbol, timeframe, 3);
+    }
+
+    /**
+     * Универсальный бэкафилл на N лет назад (UTC).
+     */
+    @Transactional
+    public void backfillYears(String symbol, String timeframe, int years) {
         final int BATCH = 1000;
-        final long TF_MILLIS = 30 * 60 * 1000L; // 30-минутный интервал
-        final long YEAR_AGO = Instant.now().minus(365, ChronoUnit.DAYS).toEpochMilli();
+        final long TF_MILLIS = 30 * 60 * 1000L; // 30m
+
+        // ВАЖНО: Instant не поддерживает YEARS/MONTHS — используем ZonedDateTime UTC
+        final long CUTOFF = ZonedDateTime.now(ZoneOffset.UTC)
+                .minusYears(years)
+                .toInstant()
+                .toEpochMilli();
 
         while (true) {
             // самая старая свеча в БД
             Instant oldestInDb = candleRepository.findMinOpenTime(symbol, timeframe);
-            long endExclusive = oldestInDb == null
+            long endExclusive = (oldestInDb == null)
                     ? Instant.now().toEpochMilli()
                     : oldestInDb.toEpochMilli();
 
             long startInclusive = endExclusive - BATCH * TF_MILLIS;
-            if (startInclusive < YEAR_AGO) startInclusive = YEAR_AGO;
+            if (startInclusive < CUTOFF) startInclusive = CUTOFF;
 
-            log.info("Backfill {} {} batch from {} to {}",
+            log.info("Backfill {} {} batch from {} to {} (cutoff ~ {} years ago)",
                     symbol, timeframe,
                     Instant.ofEpochMilli(startInclusive),
-                    Instant.ofEpochMilli(endExclusive));
+                    Instant.ofEpochMilli(endExclusive),
+                    years);
 
             Map<String, String> params = Map.of(
                     "category", "linear",
@@ -61,6 +77,7 @@ public class CandleUpdateService {
             );
 
             Map<String, Object> raw = bybitClient.publicGet("/v5/market/kline", params);
+            @SuppressWarnings("unchecked")
             List<List<String>> rows = (List<List<String>>) ((Map<?, ?>) raw.get("result")).get("list");
             if (rows == null || rows.isEmpty()) {
                 log.info("No more data, backfill finished");
@@ -86,12 +103,12 @@ public class CandleUpdateService {
             candleRepository.saveAll(toSave);
             log.info("Saved {} candles", toSave.size());
 
-            if (startInclusive <= YEAR_AGO) {
-                log.info("Reached one year ago, backfill complete");
+            // Достигли отсечки N лет назад — заканчиваем
+            if (startInclusive <= CUTOFF) {
+                log.info("Reached {} years ago, backfill complete", years);
                 break;
             }
 
-            // пауза 500 мс, чтобы не превысить лимиты Bybit
             try {
                 Thread.sleep(500);
             } catch (InterruptedException e) {
@@ -103,7 +120,7 @@ public class CandleUpdateService {
     }
 
     /**
-     * Обычное обновление последних свечей (остаётся прежним).
+     * Обычное обновление последних свечей (без изменений).
      */
     @Transactional
     public void updateCandles(String symbol, String timeframe, int limit) {
