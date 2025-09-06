@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -59,7 +60,7 @@ public class IndicatorComputeService {
             smaMap.put(groupTime, safe(smaRsi2h.get(i)));
         }
 
-        // 4. Сбор IndicatorValueEntity
+        // 4. Сбор IndicatorValueEntity (без импульса на этом этапе)
         List<IndicatorValueEntity> rows = new ArrayList<>();
         for (int i = 0; i < candles.size(); i++) {
             Candle c = candles.get(i);
@@ -89,7 +90,11 @@ public class IndicatorComputeService {
                     .build());
         }
 
-        // 5. Upsert
+        // 5. Рассчитываем и проставляем импульсные свечи (is_impulse) по ТЗ
+        applyImpulseFlags(rows, candles);
+
+        // 6. Upsert
+        // (ниже сбор коллекций оставлен для совместимости, если внутри repo используется)
         List<String> symbols      = rows.stream().map(IndicatorValueEntity::getSymbol).toList();
         List<String> timeframes   = rows.stream().map(IndicatorValueEntity::getTimeframe).toList();
         List<Instant> openTimes   = rows.stream().map(IndicatorValueEntity::getOpen_time).toList();
@@ -116,13 +121,62 @@ public class IndicatorComputeService {
         return v == null ? -1d : v;
     }
 
-
     // для совместимости
     public void computeAndLog(String symbol, String timeframe) {
         computeAndStore(symbol, timeframe);
     }
 
     /* ---------- helpers ---------- */
+
+    /**
+     * По ТЗ: импульсная свеча определяется как
+     * p_t = |close - open| / open
+     * is_impulse = p_t >= 2.5 * avg(p_{t-1..t-5})
+     * для первых 5 баров — false. Цвет бара не важен.
+     * Счёт ведётся по закрытию бара.
+     */
+    private void applyImpulseFlags(List<IndicatorValueEntity> rows, List<Candle> candles) {
+        final BigDecimal MULT = new BigDecimal("2.5");
+        final int WINDOW = 5;
+        final int SCALE = 6; // внутренняя точность вычислений (в БД сохраняем boolean)
+
+        Deque<BigDecimal> win = new ArrayDeque<>(WINDOW);
+        BigDecimal sum = BigDecimal.ZERO;
+
+        int impulses = 0;
+        for (int i = 0; i < candles.size(); i++) {
+            Candle c = candles.get(i);
+
+            BigDecimal open  = BigDecimal.valueOf(c.getOpen());
+            BigDecimal close = BigDecimal.valueOf(c.getClose());
+
+            boolean isImpulse = false;
+            if (open.signum() > 0) {
+                BigDecimal p = close.subtract(open).abs()
+                        .divide(open, SCALE, RoundingMode.HALF_UP);
+
+                if (win.size() == WINDOW) {
+                    BigDecimal avg = sum.divide(BigDecimal.valueOf(WINDOW), SCALE, RoundingMode.HALF_UP);
+                    BigDecimal thr = avg.multiply(MULT);
+                    isImpulse = p.compareTo(thr) >= 0;
+
+                    BigDecimal oldest = win.removeFirst();
+                    sum = sum.subtract(oldest);
+                }
+
+                win.addLast(p);
+                sum = sum.add(p);
+            }
+
+            // Маппим на колонку is_impulse через сеттер сущности
+            // (в IndicatorValueEntity должно быть поле @Column(name="is_impulse"))
+            rows.get(i).setImpulse(isImpulse);
+            if (isImpulse) impulses++;
+        }
+
+        log.info("INDICATORS: impulse flags computed: {} true / {} total", impulses, rows.size());
+    }
+
     private List<Candle> loadCandles(String symbol, String timeframe) {
         return candleRepository.findAllOrdered(symbol, timeframe).stream()
                 .map(e -> new Candle(

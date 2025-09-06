@@ -70,4 +70,9 @@ public class IndicatorValueEntity {
 
     @Column(name = "sma_rsi2h", nullable = false)
     private Double smaRsi2h;
+
+    // ---- Новый флаг импульсной свечи ----
+    @Column(name = "is_impulse", nullable = false)
+    @Builder.Default
+    private boolean impulse = false; // Lombok сгенерирует setImpulse(boolean)
 }
