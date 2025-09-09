@@ -18,11 +18,12 @@ import java.util.List;
  * - Риск фиксированный: 100 USDT.
  * - Комиссии учитываются в расчёте объёма (худший случай = выход по стопу всем объёмом).
  * - TP1 = 2R на 30% объёма, остаток 70%.
- * - После TP1 стоп переводится в настоящий BE+fees:
- *   учитываем комиссию входа по всему объёму, комиссию TP1 на закрытую часть
- *   и будущую комиссию выхода остатка (по стопу) — чтобы даже при стопе итог сделки не стал отрицательным.
+ * - После TP1 стоп переводится в настоящий BE+fees.
  * - RSI-выходы анализируются на 2h (сравнение i-4 и i).
  * - Стопы округляются в пользу безопасности (шаг цены 0.01).
+ * - Встроен фильтр боковика по относительной дистанции стопа:
+ *      stop_pct = |entry - stop| / entry.
+ *      < 0.6% — пропуск; 0.6–1.0% — половинный объём; >=1.0% — полный объём.
  */
 public class MainStrategy {
 
@@ -36,9 +37,13 @@ public class MainStrategy {
     private static final Duration   TF        = Duration.ofMinutes(30);
 
     // Комиссии (примерные — замени на реальные для своей биржи/аккаунта)
-    private static final BigDecimal FEE_IN       = new BigDecimal("0.0002");  // мейкер/тейкер на входе (обычно мейкер)
-    private static final BigDecimal FEE_TP       = new BigDecimal("0.0002");  // комиссия выхода на TP (обычно мейкер)
-    private static final BigDecimal FEE_STOP     = new BigDecimal("0.00055"); // комиссия выхода по стопу (обычно тейкер)
+    private static final BigDecimal FEE_IN       = new BigDecimal("0.0002");  // вход
+    private static final BigDecimal FEE_TP       = new BigDecimal("0.0002");  // TP
+    private static final BigDecimal FEE_STOP     = new BigDecimal("0.00055"); // стоп (тейкер)
+
+    // Фильтр боковика по расстоянию стопа (красный вариант 0.6%/1.0%)
+    private static final BigDecimal STOP_PCT_LOW = new BigDecimal("0.006"); // 0.6%
+    private static final BigDecimal STOP_PCT_MID = new BigDecimal("0.010"); // 1.0%
 
     // Прочее
     private static final boolean DEBUG = false;
@@ -174,7 +179,6 @@ public class MainStrategy {
                         // Перевод стопа в настоящий BE+fees
                         BigDecimal beWithFees = computeBeWithFeesStop(pos);
                         BigDecimal beSafe = safeStop(beWithFees, pos.dir);
-                        // Для LONG поднимаем стоп как минимум до BE+fees; для SHORT опускаем как максимум до BE+fees
                         pos.stopPrice = (pos.dir == Dir.LONG)
                                 ? pos.stopPrice.max(beSafe)
                                 : pos.stopPrice.min(beSafe);
@@ -248,16 +252,26 @@ public class MainStrategy {
                     StopCalcResult sc = computeStopForEntry(bars, entryIndex, entryDir);
                     if (sc != null && sc.stop != null) {
                         BigDecimal entryPrice = entryBar.open();
-                        BigDecimal qty = calcQty(entryPrice, sc.stop); // с учётом комиссий в худшем случае
-                        if (qty.compareTo(MIN_QTY) >= 0) {
-                            pending = new PendingEntry();
-                            pending.entryIndex = entryIndex;
-                            pending.dir        = entryDir;
-                            pending.stopPrice  = safeStop(sc.stop, entryDir);
-                            pending.entryPrice = entryPrice;
-                            pending.qtyBtc     = qty;
-                            pending.stopSource = sc.source;
-                            pending.impulse    = sc.impulse;
+
+                        // === ФИЛЬТР БОКОВИКА ПО STOP_PCT ===
+                        BigDecimal factor = filterVolumeFactor(entryPrice, sc.stop);
+                        if (factor.signum() > 0) {
+                            BigDecimal qty = calcQty(entryPrice, sc.stop).multiply(factor);
+                            qty = floorToStep(qty, STEP_QTY);
+
+                            if (qty.compareTo(MIN_QTY) >= 0) {
+                                pending = new PendingEntry();
+                                pending.entryIndex = entryIndex;
+                                pending.dir        = entryDir;
+                                pending.stopPrice  = safeStop(sc.stop, entryDir);
+                                pending.entryPrice = entryPrice;
+                                pending.qtyBtc     = qty;
+                                pending.stopSource = sc.source;
+                                pending.impulse    = sc.impulse;
+                            }
+                        } else {
+                            // фильтр сказал "пропустить сделку"
+                            if (DEBUG) System.out.println("Filtered out by stop_pct < " + STOP_PCT_LOW);
                         }
                     }
                 }
@@ -383,11 +397,7 @@ public class MainStrategy {
 
     /* ========================= РИСК & ОБЪЁМ (с комиссиями) ========================= */
 
-    /**
-     * Объём позиции считается по худшему случаю: выход ВСЕМ объёмом по стопу.
-     * На 1 BTC худший убыток = |entry - stop| + entry*FEE_IN + stop*FEE_STOP.
-     * qty = RISK_USDT / худший_убыток.
-     */
+    /** qty = RISK_USDT / ( |entry - stop| + entry*FEE_IN + stop*FEE_STOP ) */
     private BigDecimal calcQty(BigDecimal entry, BigDecimal stop){
         BigDecimal delta = entry.subtract(stop).abs();
         BigDecimal feeIn  = entry.multiply(FEE_IN);
@@ -404,23 +414,8 @@ public class MainStrategy {
 
     /* ========================= BE + FEES после TP1 ========================= */
 
-    /**
-     * Возвращает цену стопа BE+fees после исполнения TP1, при которой
-     * итог PnL сделки (учитывая: fee входа на весь объём, fee TP1 на закрытую часть
-     * и будущую fee на выход остатка по стопу) будет не меньше нуля.
-     *
-     * Формулы:
-     * LONG:
-     *   0 = q1*(P1 - E) + q2*(S - E) - E*feeIn*Q - P1*feeTp*q1 - S*feeStop*q2
-     *   => S = [ E*Q*(1+feeIn) + q1*P1*(feeTp - 1) ] / [ q2*(1 - feeStop) ]
-     *
-     * SHORT:
-     *   0 = q1*(E - P1) + q2*(E - S) - E*feeIn*Q - P1*feeTp*q1 - S*feeStop*q2
-     *   => S = [ q1*(E - P1) + q2*E - E*feeIn*Q - P1*feeTp*q1 ] / [ q2*(1 + feeStop) ]
-     */
     private BigDecimal computeBeWithFeesStop(Position pos) {
         if (!pos.tp1Done || pos.qtyHalf2.signum() == 0) {
-            // Нет TP1 или нечего оставлять — BE не нужен; вернём entry (дальше округлим safeStop).
             return pos.entryPrice;
         }
 
@@ -431,16 +426,13 @@ public class MainStrategy {
         BigDecimal Q  = pos.qtyFull;
 
         if (pos.dir == Dir.LONG) {
-            // S = [ E*Q*(1+feeIn) + q1*P1*(feeTp - 1) ] / [ q2*(1 - feeStop) ]
             BigDecimal numerator = E.multiply(Q).multiply(BigDecimal.ONE.add(FEE_IN))
                     .add(q1.multiply(P1).multiply(FEE_TP.subtract(BigDecimal.ONE)));
             BigDecimal denom = q2.multiply(BigDecimal.ONE.subtract(FEE_STOP));
-            if (denom.signum() == 0) return E; // защита
+            if (denom.signum() == 0) return E;
             BigDecimal S = numerator.divide(denom, 10, RoundingMode.HALF_UP);
-            // На всякий: для LONG стоп не ниже входа в BE-контексте
             return S.max(E);
         } else {
-            // S = [ q1*(E - P1) + q2*E - E*feeIn*Q - P1*feeTp*q1 ] / [ q2*(1 + feeStop) ]
             BigDecimal numerator = q1.multiply(E.subtract(P1))
                     .add(q2.multiply(E))
                     .subtract(E.multiply(FEE_IN).multiply(Q))
@@ -448,9 +440,29 @@ public class MainStrategy {
             BigDecimal denom = q2.multiply(BigDecimal.ONE.add(FEE_STOP));
             if (denom.signum() == 0) return E;
             BigDecimal S = numerator.divide(denom, 10, RoundingMode.HALF_UP);
-            // Для SHORT стоп не выше входа в BE-контексте (стоп — сверху)
             return S.min(E);
         }
+    }
+
+    /* ========================= ФИЛЬТР STOP_PCT ========================= */
+
+    /** stop_pct = |entry - stop| / entry */
+    private static BigDecimal stopPct(BigDecimal entry, BigDecimal stop){
+        if (entry == null || stop == null || entry.signum() == 0) return BigDecimal.ZERO;
+        return entry.subtract(stop).abs().divide(entry, 10, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * Возвращает коэффициент объёма в зависимости от stop_pct:
+     *   0 → сделку пропускаем;
+     *   0.5 → половинный объём;
+     *   1 → полный объём.
+     */
+    private static BigDecimal filterVolumeFactor(BigDecimal entry, BigDecimal stop){
+        BigDecimal pct = stopPct(entry, stop);
+        if (pct.compareTo(STOP_PCT_LOW) < 0) return BigDecimal.ZERO;      // пропуск
+        if (pct.compareTo(STOP_PCT_MID) < 0) return new BigDecimal("0.5"); // половина
+        return BigDecimal.ONE;                                             // полный
     }
 
     /* ========================= ОКРУГЛЕНИЯ ========================= */
