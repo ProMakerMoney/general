@@ -15,7 +15,7 @@ import java.util.List;
 public class FirstStrategy implements Strategy {
 
     // Комиссия/шаги/ТФ
-    private static final BigDecimal FEE_RATE  = new BigDecimal("0.0011"); // 0.055% * 2 (раунд-трип)
+    private static final BigDecimal FEE_RATE  = new BigDecimal("0.0004"); // 0.055% * 2 (раунд-трип)
     private static final BigDecimal MIN_QTY   = new BigDecimal("0.001");
     private static final BigDecimal STEP_QTY  = new BigDecimal("0.001");
     private static final Duration   TF        = Duration.ofMinutes(30);

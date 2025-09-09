@@ -30,11 +30,11 @@ public class CandleUpdateService {
     /**
      * Догружает исторические свечи за последние ТРИ года пачками по 1000,
      * делая паузу 500 мс между запросами.
-     * (Метод оставлен для совместимости, теперь грузит 3 года.)
+     * (Метод оставлен для совместимости, теперь грузит 2 года.)
      */
     @Transactional
     public void backfillYear(String symbol, String timeframe) {
-        backfillYears(symbol, timeframe, 3);
+        backfillYears(symbol, timeframe, 2);
     }
 
     /**

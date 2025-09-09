@@ -22,7 +22,7 @@ public class MainProStrategy {
 
     // Риск/комиссия/шаг
     private static final BigDecimal RISK_USDT = new BigDecimal("100");
-    private static final BigDecimal FEE_RATE  = new BigDecimal("0.0011"); // 0.055% * 2
+    private static final BigDecimal FEE_RATE  = new BigDecimal("0.0004"); // 0.055% * 2
     private static final BigDecimal MIN_QTY   = new BigDecimal("0.001");
     private static final BigDecimal STEP_QTY  = new BigDecimal("0.001");
     private static final Duration   TF        = Duration.ofMinutes(30);
