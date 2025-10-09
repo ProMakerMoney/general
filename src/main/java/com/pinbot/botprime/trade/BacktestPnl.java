@@ -7,7 +7,7 @@ import java.time.Instant;
 
 
 @Entity
-@Table(name = "backtest_pnl")
+@Table(name = "btc_30m_backtest_pnl", schema = "public")
 public class BacktestPnl {
     @Id
     @Column(name = "trade_id")

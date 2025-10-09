@@ -23,7 +23,7 @@ public class IndicatorDao {
               ema11, ema30, ema110, ema200,
               tema9, rsi2h, sma_rsi2h,
               is_impulse
-            FROM indicator_values
+            FROM btc_30m_indicators
             ORDER BY open_time ASC
         """;
 

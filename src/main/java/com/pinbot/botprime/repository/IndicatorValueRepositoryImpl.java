@@ -18,7 +18,7 @@ public class IndicatorValueRepositoryImpl implements IndicatorValueRepositoryCus
 
     // ДОБАВЛЕНА колонка is_impulse и её обновление в ON CONFLICT
     private static final String UPSERT_SQL = """
-        INSERT INTO indicator_values
+        INSERT INTO btc_30m_indicators
           (symbol, timeframe, open_time,
            open, high, low, close,
            volume, quote_volume,

@@ -7,7 +7,7 @@ import java.time.Instant;
 
 
 @Entity
-@Table(name = "backtest_trades")
+@Table(name = "btc_30m_backtest_trades", schema = "public")
 public class BacktestTrade {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

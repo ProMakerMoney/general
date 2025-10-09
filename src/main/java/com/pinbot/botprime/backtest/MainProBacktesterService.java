@@ -98,7 +98,7 @@ public class MainProBacktesterService {
             pnlRepo.save(p);
         }
 
-        log.info("[MAINPRO] Обсчитано {} сделок. Добавлены в mainpro_backtest_trades.", n);
+        log.info("[MAINPRO] Обсчитано {} сделок. Добавлены в btc_30m_mainpro_backtest_trades.", n);
 
         // последние 3 строки для быстрого контроля
         tradeRepo.findAll().stream()
@@ -109,7 +109,7 @@ public class MainProBacktesterService {
                         t.getEntryPrice(), t.getStopPrice(), t.getQtyBtc(),
                         t.getExitPrice(), t.getExitTime(), t.getReason()));
 
-        return String.format("[MAINPRO] Обсчитано %d сделок. Добавлены в таблицу mainpro_backtest_trades.", n);
+        return String.format("[MAINPRO] Обсчитано %d сделок. Добавлены в таблицу btc_30m_mainpro_backtest_trades.", n);
     }
 
     private static boolean isLong(MainProBacktestTrade t) { return "LONG".equals(t.getSide()); }

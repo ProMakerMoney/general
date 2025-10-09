@@ -5,7 +5,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 
 @Entity
-@Table(name = "candles")
+@Table(name = "btc_30m_history", schema = "public")
 public class CandleEntity {
 
     @EmbeddedId

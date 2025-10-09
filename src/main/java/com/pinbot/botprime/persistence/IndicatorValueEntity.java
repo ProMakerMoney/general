@@ -7,7 +7,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 
 @Entity
-@Table(name = "indicator_values",
+@Table(name = "btc_30m_indicators",
         uniqueConstraints = {
                 @UniqueConstraint(name = "uq_indicator_values", columnNames = {"symbol","timeframe","open_time"})
         })

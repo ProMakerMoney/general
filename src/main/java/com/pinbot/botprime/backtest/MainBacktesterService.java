@@ -41,7 +41,7 @@ public class MainBacktesterService {
         var bars = indicatorDao.fetchAllBarsAsc();
         if (bars.isEmpty()) {
             log.info("Данных нет. Сделок не создано.");
-            return "Обсчитано 0 сделок. Добавлены в таблицу main_backtest_trades.";
+            return "Обсчитано 0 сделок. Добавлены в таблицу btc_30m_main_backtest_trades.";
         }
 
         List<MainBacktestTrade> trades = strategy.backtest(bars);
@@ -101,7 +101,7 @@ public class MainBacktesterService {
         }
 
         int n = saved.size();
-        log.info("[MAIN] Обсчитано {} сделок. Добавлены в таблицу main_backtest_trades.", n);
+        log.info("[MAIN] Обсчитано {} сделок. Добавлены в таблицу btc_30m_main_backtest_trades.", n);
         int from = Math.max(0, n - 3);
         List<MainBacktestTrade> tail = n == 0 ? Collections.emptyList() : saved.subList(from, n);
         for (MainBacktestTrade t : tail) {
@@ -110,7 +110,7 @@ public class MainBacktesterService {
                     t.getEntryPrice(), t.getStopPrice(), t.getQtyBtc(),
                     t.getTp1Price(), t.getExitTime(), t.getExitPrice(), t.getReason());
         }
-        return String.format("[MAIN] Обсчитано %d сделок. Добавлены в таблицу main_backtest_trades.", n);
+        return String.format("[MAIN] Обсчитано %d сделок. Добавлены в таблицу btc_30m_main_backtest_trades.", n);
     }
 
     private static boolean isLong(MainBacktestTrade t) { return "LONG".equals(t.getSide()); }

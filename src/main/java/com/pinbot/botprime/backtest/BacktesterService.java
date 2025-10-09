@@ -44,7 +44,7 @@ public class BacktesterService {
         var bars = indicatorDao.fetchAllBarsAsc();
         if (bars.isEmpty()) {
             log.info("Данных нет. Сделок не создано.");
-            return "Обсчитано 0 сделок. Добавлены в таблицу backtest_trades.";
+            return "Обсчитано 0 сделок. Добавлены в таблицу btc_30m_backtest_trades.";
         }
 
         // прогон стратегии (внутри она проставит CROSS / is_impulse)
@@ -91,7 +91,7 @@ public class BacktesterService {
         }
 
         int n = saved.size();
-        log.info("Обсчитано {} сделок. Добавлены в таблицу backtest_trades.", n);
+        log.info("Обсчитано {} сделок. Добавлены в таблицу btc_30m_backtest_trades.", n);
 
         // Показать последние 3 сделки
         int from = Math.max(0, n - 3);
@@ -103,7 +103,7 @@ public class BacktesterService {
                     t.getExitTime(), t.getExitPrice());
         }
 
-        return String.format("Обсчитано %d сделок. Добавлены в таблицу backtest_trades.", n);
+        return String.format("Обсчитано %d сделок. Добавлены в таблицу btc_30m_backtest_trades.", n);
     }
 
     private static BigDecimal scale2(BigDecimal v) {

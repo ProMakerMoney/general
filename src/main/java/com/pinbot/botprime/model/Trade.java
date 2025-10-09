@@ -8,7 +8,7 @@ import java.time.LocalDateTime;
 
 @Data                       // ★ генерирует getters/setters, toString, equals, hashCode
 @Entity
-@Table(name = "trades")
+@Table(name = "btc_30m_trades", schema = "public")
 public class Trade {
 
     @Id

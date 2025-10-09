@@ -5,7 +5,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 
 @Entity
-@Table(name = "main_backtest_pnl")
+@Table(name = "btc_30m_main_backtest_pnl", schema = "public")
 public class MainBacktestPnl {
     @Id
     @Column(name = "trade_id")
