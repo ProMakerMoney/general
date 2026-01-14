@@ -18,7 +18,7 @@ public class IndicatorBootstrap {
 
     private final IndicatorComputeService service;
 
-    @Value("${indicator.bootstrap.enabled:true}")
+    @Value("${indicator.bootstrap.enabled:false}")
     private boolean enabled;
 
     @Value("${indicator.bootstrap.symbols:BTCUSDT}")

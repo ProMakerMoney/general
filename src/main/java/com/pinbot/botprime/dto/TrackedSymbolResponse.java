@@ -6,7 +6,6 @@ import lombok.Value;
 @Value
 @Builder
 public class TrackedSymbolResponse {
-
     Long id;
     String symbol;
     String name;

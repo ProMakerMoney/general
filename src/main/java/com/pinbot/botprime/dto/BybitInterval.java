@@ -2,6 +2,10 @@ package com.pinbot.botprime.dto;
 
 import java.util.Arrays;
 
+/**
+ * Bybit V5 interval enum.
+ * API values: 1,3,5,15,30,60,120,240,360,720,D,W,M
+ */
 public enum BybitInterval {
 
     _1("1"),
@@ -32,8 +36,9 @@ public enum BybitInterval {
         if (apiValue == null) {
             throw new IllegalArgumentException("BybitInterval apiValue is null");
         }
+        String v = apiValue.trim();
         return Arrays.stream(values())
-                .filter(v -> v.apiValue.equalsIgnoreCase(apiValue.trim()))
+                .filter(i -> i.apiValue.equalsIgnoreCase(v))
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("Unknown BybitInterval apiValue: " + apiValue));
     }

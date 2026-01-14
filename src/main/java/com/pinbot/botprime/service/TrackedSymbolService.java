@@ -1,5 +1,6 @@
 package com.pinbot.botprime.service;
 
+import com.pinbot.botprime.candles.DynamicCandleTableManager;
 import com.pinbot.botprime.dto.BybitInterval;
 import com.pinbot.botprime.dto.TrackedSymbolCreateRequest;
 import com.pinbot.botprime.dto.TrackedSymbolResponse;
@@ -18,19 +19,21 @@ import java.util.List;
 public class TrackedSymbolService {
 
     private final TrackedSymbolRepository repository;
+    private final DynamicCandleTableManager tableManager;
 
     @Transactional
     public TrackedSymbolResponse add(TrackedSymbolCreateRequest req) {
         String symbol = req.getSymbol().trim().toUpperCase();
         String name = req.getName().trim();
-
-        // enum уже валидирован @NotNull на DTO
         BybitInterval interval = req.getTimeframe();
-        String timeframe = interval.apiValue(); // "30", "D", ...
+        String timeframe = interval.apiValue();
 
         if (repository.existsBySymbolAndTimeframe(symbol, timeframe)) {
             throw new IllegalArgumentException("Already exists: " + symbol + " @ " + timeframe);
         }
+
+        // Create candles table first, so we never end up with a tracked record without a table.
+        tableManager.createTable(symbol, interval);
 
         TrackedSymbolEntity entity = TrackedSymbolEntity.builder()
                 .symbol(symbol)
@@ -43,32 +46,36 @@ public class TrackedSymbolService {
             TrackedSymbolEntity saved = repository.save(entity);
             return toResponse(saved);
         } catch (DataIntegrityViolationException e) {
-            // если два запроса одновременно — уникальный индекс все равно защитит
+            // If a race happened, drop the table we created (best effort), then bubble the error.
+            try {
+                tableManager.dropTable(symbol, interval);
+            } catch (Exception ignored) {
+                // best-effort cleanup
+            }
             throw new IllegalArgumentException("Already exists: " + symbol + " @ " + timeframe);
         }
     }
 
     @Transactional
     public void deleteById(long id) {
-        if (!repository.existsById(id)) {
-            throw new IllegalArgumentException("Not found: id=" + id);
-        }
+        TrackedSymbolEntity existing = repository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Not found: id=" + id));
+
+        BybitInterval interval = BybitInterval.fromApiValue(existing.getTimeframe());
         repository.deleteById(id);
+        tableManager.dropTable(existing.getSymbol(), interval);
     }
 
-    /**
-     * Удаление по symbol + timeframe в "bybit формате" (например timeframe="30" или "D").
-     * Если в контроллере ты хочешь принимать enum — сделаем отдельную перегрузку.
-     */
     @Transactional
-    public void deleteBySymbolAndTimeframe(String symbol, String timeframe) {
+    public void deleteBySymbolAndTimeframe(String symbol, BybitInterval interval) {
         String s = symbol.trim().toUpperCase();
-        String tf = timeframe.trim().toUpperCase(); // для D/W/M; цифры не изменятся
+        String tf = interval.apiValue();
 
         TrackedSymbolEntity existing = repository.findBySymbolAndTimeframe(s, tf)
                 .orElseThrow(() -> new IllegalArgumentException("Not found: " + s + " @ " + tf));
 
         repository.delete(existing);
+        tableManager.dropTable(s, interval);
     }
 
     @Transactional(readOnly = true)
@@ -77,14 +84,11 @@ public class TrackedSymbolService {
     }
 
     private TrackedSymbolResponse toResponse(TrackedSymbolEntity e) {
-        // e.getTimeframe() хранит "30"/"D"/...
-        BybitInterval interval = BybitInterval.fromApiValue(e.getTimeframe());
-
         return TrackedSymbolResponse.builder()
                 .id(e.getId())
                 .symbol(e.getSymbol())
                 .name(e.getName())
-                .timeframe(interval)
+                .timeframe(BybitInterval.fromApiValue(e.getTimeframe()))
                 .build();
     }
 }

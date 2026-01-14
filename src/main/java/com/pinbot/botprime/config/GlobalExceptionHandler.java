@@ -12,6 +12,12 @@ public class GlobalExceptionHandler {
 
     private final LogService log;
 
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<String> handleBadRequest(IllegalArgumentException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(ex.getMessage());
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<String> handle(Exception ex) {
         ex.printStackTrace();                         // <-- сразу в консоль

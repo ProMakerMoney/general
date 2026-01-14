@@ -29,6 +29,7 @@ public class TrackedSymbolEntity {
     @Column(name = "name", nullable = false, length = 100)
     private String name;
 
+    /** Stored as Bybit API value, e.g. "30", "D" */
     @Column(name = "timeframe", nullable = false, length = 20)
     private String timeframe;
 

@@ -36,12 +36,7 @@ public class TrackedSymbolController {
     }
 
     /**
-     * Удаление по symbol + timeframe.
-     * В запросе timeframe передаётся как enum (например _30, D, W, M),
-     * внутри мы конвертируем в bybit-строку ("30", "D"...).
-     *
-     * Пример:
-     * DELETE /api/tracked-symbols?symbol=BTCUSDT&timeframe=_30
+     * DELETE /api/tracked-symbols?symbol=ETHUSDT&timeframe=_30
      */
     @DeleteMapping
     @ResponseStatus(HttpStatus.NO_CONTENT)
@@ -49,6 +44,6 @@ public class TrackedSymbolController {
             @RequestParam String symbol,
             @RequestParam BybitInterval timeframe
     ) {
-        service.deleteBySymbolAndTimeframe(symbol, timeframe.apiValue());
+        service.deleteBySymbolAndTimeframe(symbol, timeframe);
     }
 }
