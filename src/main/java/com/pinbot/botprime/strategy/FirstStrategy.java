@@ -15,7 +15,9 @@ import java.util.List;
 public class FirstStrategy implements Strategy {
 
     // Комиссия/шаги/ТФ
-    private static final BigDecimal FEE_RATE  = new BigDecimal("0.0004"); // 0.04% * 2 (раунд-трип)
+    // Биржа: 0.055% за вход + 0.055% за выход = 0.11% round-trip
+    // ВАЖНО: логика комиссий оставлена как в исходнике — одна константа "round-trip" считается от entry notional.
+    private static final BigDecimal FEE_RATE  = new BigDecimal("0.00110"); // 0.11% round-trip
     private static final BigDecimal MIN_QTY   = new BigDecimal("0.001");
     private static final BigDecimal STEP_QTY  = new BigDecimal("0.001");
     private static final Duration   TF        = Duration.ofMinutes(30);
@@ -224,7 +226,7 @@ public class FirstStrategy implements Strategy {
     // ===== Helpers: расчёт стопа (импульс/кроссы/tema9-окно) =====
 
     private BigDecimal computeStopForEntry(List<Bar> bars, int entryIndex, Dir dir) {
-        // Окно импульсов: [entryIndex-5 .. entryIndex]
+        // Окно импульсов: [entryIndex-5 . entryIndex]
         int from = Math.max(0, entryIndex - 5);
         int to   = entryIndex;
 
@@ -360,7 +362,7 @@ public class FirstStrategy implements Strategy {
         return bestIdx;
     }
 
-    /** Индексы кроссов EMA11/EMA30 в окне [from..to] */
+    /** Индексы кроссов EMA11/EMA30 в окне [from.to] */
     private List<Integer> findCrossIdxInWindow(List<Bar> bars, int from, int to) {
         List<Integer> res = new ArrayList<>();
         int lo = Math.max(1, from); // нужен prev
@@ -473,4 +475,3 @@ public class FirstStrategy implements Strategy {
     private static BigDecimal scale2(BigDecimal v) { return v.setScale(2, RoundingMode.HALF_UP); }
     private static BigDecimal scale3(BigDecimal v) { return v.setScale(3, RoundingMode.HALF_UP); }
 }
-
